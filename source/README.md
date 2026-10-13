@@ -1,45 +1,52 @@
-# LinkDesk 0.3.0 standalone native interfaces
+# LinkDesk 0.4.0
 
-GPL-2.0-only. SwiftUI/AppKit on macOS 13+ arm64; WPF on Windows x64 with self-contained .NET 10. The packages embed the unmodified Deskflow 1.27.0 core and required Qt/OpenSSL/C++ runtime files. End users do not install Deskflow or run its GUI.
+GPL-2.0-only. Native SwiftUI/AppKit on macOS 13+ Apple Silicon; WPF on Windows x64 with self-contained .NET 10. Packages embed the unmodified Deskflow 1.27.0 core and required runtime files. Users do not install Deskflow or .NET separately.
+
+## Connection model
+
+Either platform can share or receive input: Mac → Windows, Windows → Mac, Mac → Mac, and Windows → Windows. Both devices need an IP network that allows them to communicate; a router, Ethernet LAN or hotspot works. A Windows hotspot is not required. Input uses TLS on TCP 24800; automatic discovery uses IPv4 UDP 24801. Discovery does not traverse routers, guest-network isolation or NAT. Manual names/addresses and complete fingerprints provide a fallback.
+
+Pair multiple computers, then explicitly select one current connection on each side. Set one side to share and the other to receive. Discovery runs while the application is open in either role, even before starting input sharing. Devices with identical names are kept separate by SHA-256 certificate fingerprint. The two connected computers' core names must differ; fresh installations generate names with an identity suffix.
+
+## Identity and pairing
+
+Profiles: ~/Library/Application Support/LinkDesk on macOS; %LOCALAPPDATA%/LinkDesk on Windows. New identities are locally generated RSA-2048 / SHA-256 certificates. Existing valid Deskflow identities and trust databases migrate once when no LinkDesk identity exists. Broken identities or device catalogs cause an error and are preserved.
+
+devices.json stores paired identities, aliases, last known addresses, selected fingerprint and per-device input settings. Unpaired discovery candidates stay in memory. A discovery signature proves possession of the advertised certificate key, not trust: users must compare the full SHA-256 fingerprint on the other computer before pairing. Names, reported platform and role are descriptive metadata, not the identity.
+
+Each connection uses connections/<selected SHA256>/ as its core profile. Its TLS trust databases contain only the selected fingerprint, in both roles. An already-paired alternative device cannot substitute for the selection. Forgetting removes its record and connection profile; a migration marker prevents old root trust databases from resurrecting forgotten pairings. No private keys, personal settings or pairing records are shipped.
+
+## Discovery and recovery
+
+Protocol v2 signs the fresh random query nonce, name, source IPv4 address, port, platform and role using the advertised certificate key (RSA SHA-256 PKCS#1 or ECDSA SHA-256 DER). Both implementations validate signature, nonce, source address, field formats and protocol version before displaying a candidate. Only the explicitly selected paired identity can update the current connection address. Broadcast and remembered-address probes are bounded and rate-limited. The Mac responder also answers legacy v1 server queries for migration; both endpoints should upgrade to 0.4.0 for symmetric discovery.
+
+macOS watches NWPathMonitor and wake notifications; Windows watches NetworkAddressChanged and PowerModeChanged. Debounced recovery respects manual stop and auto-connect intent, retains healthy connections and bounds failed launches. Desktop process mode is used; only owned child processes are terminated. The Windows portable marker keeps core TLS state in the selected LinkDesk profile rather than ProgramData/Deskflow.
+
+## Input
+
+Modifier mapping is applied by the sharing device; scroll direction and speed by the receiving device. Settings follow the selected peer. New cross-platform pairings exchange Command/Windows and Ctrl/Control; same-platform pairings keep modifiers unchanged. Migrated custom settings are retained. Local input and Mos preferences are untouched. No switching hotkeys were added.
 
 ## Build
 
-Packaging requires the official upstream binary distribution as a build input, plus the notices in `third-party`. This is a developer build dependency, not an installed-app dependency.
+Developer packaging requires official Deskflow 1.27.0 binary distributions as inputs and notices in third-party. This is a build dependency, not an installed-app dependency.
 
-macOS: point `LINKDESK_DESKFLOW_APP` at the official extracted Deskflow.app, then run `scripts/build-mac.sh`. The default build input is `/Applications/Deskflow.app`. The output embeds its core in `Contents/MacOS`, frameworks in `Contents/Frameworks`, and plugins in `Contents/PlugIns`. It is locally signed, not notarized.
+- macOS: set LINKDESK_DESKFLOW_APP to the extracted official Deskflow.app, then run sh scripts/build-mac.sh. Default input: /Applications/Deskflow.app. The script embeds the core, frameworks and plugins and applies a local ad-hoc signature; the release is not notarized.
+- Windows: extract the official x64 portable distribution, set LINKDESK_DESKFLOW_WINDOWS to that folder, then run scripts/build-windows.ps1 with .NET 10 SDK and Python 3. Ship the entire output folder including core/ and ThirdParty/.
 
-Windows: extract the official Deskflow 1.27.0 x64 portable ZIP, set `LINKDESK_DESKFLOW_WINDOWS` to the extracted directory, then run `scripts/build-windows.ps1` with .NET 10 SDK and Python 3. The output has LinkDesk.exe, core/ and ThirdParty/. Ship the entire folder. See `third-party/README.md` for upstream notices and source archives.
-
-## Identity and process isolation
-
-macOS uses `~/Library/Application Support/LinkDesk`; Windows uses `%LOCALAPPDATA%/LinkDesk`. New identities are RSA-2048 self-signed SHA-256 certificates, generated locally. Existing Deskflow identities and pairing databases are copied once when the LinkDesk identity does not exist. Existing broken identities cause an error rather than being silently replaced. Fingerprints are SHA-256 over DER certificates and are shown in both connection pages.
-
-The Windows embedded core includes a clean `core/settings/Deskflow.conf` portable marker. This makes the upstream core use the explicitly passed per-user settings folder for TLS, instead of its normal ProgramData/Deskflow folder. Both platforms set XDG_STATE_HOME to the LinkDesk profile. Desktop process mode is used; only owned child processes are terminated. Core IPC stays the upstream Unix socket/named pipe protocol, with version negotiation.
-
-TLS and fingerprint validation remain mandatory. Unknown peers require explicit fingerprint confirmation. No personal certificates, private keys, settings or pairing databases are packaged.
-
-## Recovery and discovery
-
-macOS watches NWPathMonitor and NSWorkspace wake notifications; Windows watches NetworkAddressChanged and PowerModeChanged. Debounced recovery respects manual stop and saved auto-connect intent. Healthy connections are retained. Repeated failed launches use bounded retries.
-
-Mac servers answer IPv4 UDP queries on port 24801 while their core is ready. Windows validates the pinned certificate, fresh nonce, expected peer name, signed source IP and RSA/ECDSA signature before updating the saved address. This supports already-paired Mac-server/Windows-client connections; initial pairing and reverse roles use manual addresses. The input connection uses TLS on TCP 24800.
-
-## Input and icons
-
-Sender-owned per-peer modifier mapping; receiver-owned X/Y scroll inversion and scaling. Local input and Mos preferences are untouched. No new switching hotkeys. Native ICNS/ICO assets are included; generator scripts use AppKit and the Python standard library.
+See third-party/README.md for licenses, runtime hashes and corresponding upstream source archives. Native ICNS/ICO assets are included; icon scripts use AppKit and Python's standard library.
 
 ## Tests
 
-From this directory:
+Swift test entry points compile separately with their supporting source files:
 
-```sh
-swiftc -parse-as-library macOS/Configuration.swift tests/ConfigurationTests.swift -o /tmp/linkdesk-config-tests
-/tmp/linkdesk-config-tests
-swiftc -parse-as-library macOS/Identity.swift tests/IdentityTests.swift -o /tmp/linkdesk-identity-tests
-/tmp/linkdesk-identity-tests
-python3 scripts/test-recovery-mac.py
-```
+    swiftc -parse-as-library macOS/Configuration.swift tests/ConfigurationTests.swift -o /tmp/linkdesk-config-tests
+    /tmp/linkdesk-config-tests
+    swiftc -parse-as-library macOS/Configuration.swift macOS/Identity.swift macOS/Peers.swift macOS/Discovery.swift tests/MultiPeerTests.swift -o /tmp/linkdesk-peer-tests
+    /tmp/linkdesk-peer-tests
+    swiftc -parse-as-library macOS/Configuration.swift macOS/Identity.swift macOS/Peers.swift macOS/Discovery.swift tests/DiscoveryV2Tests.swift -o /tmp/linkdesk-discovery-tests
+    /tmp/linkdesk-discovery-tests
+    python3 scripts/test-recovery-mac.py
 
-C# test entry points are standalone console programs, compiled with .NET 10: InputSettingsTests.cs with InputConfiguration.cs; DiscoveryTests.cs with Discovery.cs; IdentityTests.cs with Identity.cs and Discovery.cs. Identity tests generate temporary test identities, verify stable reuse and migration, reject corrupt files without rotation, and verify signed discovery. Swift identity tests additionally verify private-file permissions and optionally compare a C#-generated PEM/fingerprint passed as two arguments.
+C# tests are separate .NET 10 console programs: InputSettingsTests.cs with InputConfiguration.cs; DiscoveryTests.cs / DiscoveryV2Tests.cs with Discovery.cs and Peers.cs; IdentityTests.cs / MultiPeerTests.cs also require Identity.cs. Enable nullable and disable default compile items when compiling a subset. Tests create temporary identities, never real application keys. The v2 test programs also expose loopback-only interoperation endpoints for testing Swift ↔ C# discovery.
 
-Tests validate the model and protocols. Cross-compilation and dependency inspection cannot replace actual Windows connection testing. See `../验证记录.md` for actual outcomes and remaining limits.
+See the release verification record for physical-machine results and limits. Configuration tests for four OS combinations do not replace hardware tests. Packages target Apple Silicon and Windows x64; Intel Mac and other platforms are not shipped.

@@ -1,6 +1,6 @@
 import Foundation
 
-struct LinkInputSettings {
+struct LinkInputSettings: Codable {
     var command = "super"
     var control = "ctrl"
     var option = "alt"

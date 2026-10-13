@@ -1,55 +1,35 @@
 # LinkDesk
 
-Mac 与 Windows 键鼠共享的原生界面，当前版本 **0.3.0 独立版**。Mac 使用 SwiftUI，Windows 使用 WPF。
+一套键鼠，连接 Mac 与 Windows。当前版本 **0.4.0 独立版**，Mac 使用 SwiftUI，Windows 使用 WPF。两端内置 Deskflow 1.27.0 连接核心与必要运行库，无需另装 Deskflow；Windows 无需另装 .NET。
 
-**两端无需安装 Deskflow。** 安装包内置 Deskflow 1.27.0 连接核心及必要运行库。Windows 同时包含 .NET 运行时。证书由 LinkDesk 本地生成，首次配对在两端核对指纹后完成；升级可迁移原有证书和配对记录。
+## 下载与连接
 
-## 下载与使用
+安装包和对应上游源码见 [v0.4.0 发布页](https://github.com/vvanjune/LinkDesk/releases/tag/v0.4.0)。这是测试发布，Mac 使用本地签名、尚未公证，Windows 尚未进行发布签名。支持 Apple Silicon Mac 与 Windows x64。
 
-完整程序和上游源码资料见 [v0.3.0 发布页](https://github.com/vvanjune/LinkDesk/releases/tag/v0.3.0)。这是本地测试版本，Mac 使用临时签名，尚未公证。
+1. Mac 将完整 LinkDesk.app 放入应用程序，允许设备控制；Windows 完整解压后运行 LinkDesk.exe，保留 core 和 ThirdParty 文件夹。
+2. 两台电脑连接可互通的局域网，一端选择共享键鼠、另一端选择接收。
+3. 两端在“配对设备”明确选择对方，核对完整指纹并确认，然后启动共享。
 
-- Mac：解压后把完整 LinkDesk.app 放入应用程序目录，并授予设备控制权限。
-- Windows：完整解压后运行 LinkDesk.exe，保留旁边的 core 和 ThirdParty 文件夹。不要只复制 EXE。
-- 首次连接：Mac 共享、Windows 接收；核对两端电脑名称，Windows 填 Mac 显示的地址并启动。出现配对提示时核对另一端的本机指纹。
+详见 [使用说明](使用说明.md)。Mac → Windows、Windows → Mac、Mac → Mac、Windows → Windows 均有共享与接收实现。可使用路由器、热点、有线局域网，不限定 Windows 开热点。四种组合的配置测试通过；各组合硬件验证情况见 [验证记录](验证记录.md)。
 
-详见 [使用说明](使用说明.md)。
+## 多设备配对
 
-## 功能
+- 同名电脑按不同 SHA-256 指纹分别列出，支持备注名称、选择、忘记和手动添加。
+- 可以保存多台配对设备，每次选择一台连接；当前连接的信任范围只包含所选指纹。
+- 双端签名发现验证所选身份后更新地址；其它已配对设备不会替换当前选择。
+- 平台、用途、名字、地址为签名元数据；配对身份由完整指纹确认，发现本身不会自动授予信任。
+- 按键映射与滚动设置分别随设备保存。升级保留身份和设置，多份旧配对需明确选择。
 
-- 登录后自启动、关闭窗口留在后台。
-- 网络恢复和唤醒后尝试自动恢复连接，尊重手动停止。
-- Windows 自动发现已配对的 Mac，验证身份后更新地址。
-- 按键映射、远程滚轮方向与速度设置。
-- 必须使用 TLS 加密和指纹验证；两端可查看本机指纹。
-- 原生图标与 Mac 侧栏完整点击范围。
+这不是同时连接多台的屏幕网格。发现限于同一 IPv4 局域网；广播被阻挡时可以手动添加，网络仍须互通。未提供公网穿透或 USB 鼠标模拟。
 
-自动发现支持同一 IPv4 局域网内的 Mac 共享端 → Windows 接收端；首次配对和反向角色使用手动地址。没有新增切换快捷键。
+## 日常使用
 
-## 多设备限制
+登录后自启动、关闭窗口留在后台、网络恢复和唤醒后尝试重连。手动停止后保持停止。按键映射在共享端设置，远程滚动方向和速度在接收端设置，不改本机输入或 Mos。没有新增切换快捷键。
 
-当前没有已配对设备列表，使用已信任指纹集合和填写的电脑名称筛选。多台已经配对的 Mac 若使用相同名称，自动发现可能出现选择歧义；暂时请为每台电脑设置不同名称。本版未实现对所选设备的单个指纹绑定。
+## 开发与许可
 
-## 数据位置
+源码在 source；构建需要 Swift 工具链或 .NET 10 SDK、Python 3，以及官方 Deskflow 1.27.0 二进制发行包作为嵌入输入。构建依赖不会成为用户的外部安装依赖。步骤与测试见 [技术说明](source/README.md)。
 
-Mac：`~/Library/Application Support/LinkDesk/`；Windows：`%LOCALAPPDATA%/LinkDesk/`。证书、私钥和配对数据库在各自用户目录创建，均不上传到本仓库，也不随安装包分发。
+LinkDesk 源码采用 [GPL-2.0-only](LICENSE)。传输核心来自 [Deskflow](https://github.com/deskflow/deskflow)，源码行为未修改。上游许可和运行库声明见 [third-party](source/third-party/README.md)，对应上游源码与安装包一同发布。
 
-## 开发与构建
-
-源码位于 source。macOS 需要 Swift 工具链及 Python 3；Windows 需要 .NET 10 SDK、PowerShell 与 Python 3。**构建时**需要官方 Deskflow 二进制包作为嵌入核心的输入，最终安装包不依赖外部安装。
-
-```sh
-LINKDESK_DESKFLOW_APP=/path/to/Deskflow.app sh source/scripts/build-mac.sh
-```
-
-```powershell
-$env:LINKDESK_DESKFLOW_WINDOWS = 'C:\path\to\official-portable-folder'
-./source/scripts/build-windows.ps1
-```
-
-测试、内置文件布局及发现协议见 [技术说明](source/README.md)；实测结果和限制见 [验证记录](验证记录.md)。
-
-## 许可与上游
-
-LinkDesk 源码采用 [GPL-2.0-only](LICENSE)。传输核心来自 [Deskflow](https://github.com/deskflow/deskflow)。核心源码行为未修改；macOS 将嵌入程序与运行库一起进行本地签名。上游许可、Qt/OpenSSL/.NET/C++ 运行库声明见 [third-party](source/third-party/README.md)。上游源码档案与安装包在同一发布页提供。
-
-0.2.0 曾依赖已有 Deskflow 安装，0.3.0 已将该依赖移入安装包并增加独立身份管理。
+身份、私钥、个人偏好和配对记录在各自用户目录生成，不上传仓库、不随安装包提供。历史版本记录保留；当前源码、说明使用通用名称及示例地址。

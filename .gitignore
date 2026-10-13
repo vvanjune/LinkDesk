@@ -23,3 +23,8 @@
 preferences.json
 TrustedClients.txt
 TrustedServers.txt
+
+# Device catalog and selected connection profiles
+devices.json
+device-migration.done
+connections/
