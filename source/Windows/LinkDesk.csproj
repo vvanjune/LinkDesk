@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType><TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF><UseWindowsForms>true</UseWindowsForms><EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <Nullable>enable</Nullable><ImplicitUsings>disable</ImplicitUsings><AssemblyName>LinkDesk</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>../assets/LinkDesk.ico</ApplicationIcon>
+    <Version>0.2.0</Version>
+  </PropertyGroup>
+  <ItemGroup><Resource Include="../assets/LinkDesk.ico" Link="Assets/LinkDesk.ico" /></ItemGroup>
+</Project>

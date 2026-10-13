@@ -1,0 +1,25 @@
+# Build products and local files
+.DS_Store
+**/bin/
+**/obj/
+.build/
+.vs/
+.idea/
+/macOS/
+/Windows/
+/work/
+*.zip
+*.exe
+*.dll
+*.pdb
+*.app/
+
+# Local identities, pairing data and logs
+*.pem
+*.key
+*.p12
+*.pfx
+*.log
+preferences.json
+TrustedClients.txt
+TrustedServers.txt
