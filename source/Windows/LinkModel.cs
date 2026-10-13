@@ -40,8 +40,8 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
  public event PropertyChangedEventHandler? PropertyChanged;
  private void Changed([CallerMemberName] string? key = null) => PropertyChanged?.Invoke(this,new PropertyChangedEventArgs(key));
  private readonly string folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"LinkDesk");
- private readonly string tlsFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),"Deskflow","tls");
- private readonly string engine = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),"Deskflow","deskflow-core.exe");
+ private readonly string tlsFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"LinkDesk","tls");
+ private readonly string engine = Path.Combine(AppContext.BaseDirectory,"core","deskflow-core.exe");
  private Preferences preferences;
  private Process? child;
  private NamedPipeClientStream? pipe;
@@ -65,7 +65,8 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
  public bool KeepBackground {get=>preferences.KeepBackground;set{preferences.KeepBackground=value;Save();Changed();}}
  public bool AutoConnect {get=>preferences.AutoConnect;set{preferences.AutoConnect=value;Save();Changed();}}
  public bool AutoDiscover {get=>preferences.AutoDiscover;set{preferences.AutoDiscover=value;Save();Changed();Changed(nameof(CanManualHost));ConfigureDiscovery();}}
- public bool CanManualHost=>CanEdit&&(Server||!AutoDiscover);
+ public bool CanManualHost=>CanEdit&&!Server;
+ public string LocalFingerprint {get;private set;}="正在准备本机身份…";
  private string discoveryStatus="正在查找已配对的 Mac";
  public string DiscoveryStatus {get=>discoveryStatus;private set{discoveryStatus=value;Changed();}}
  public string MapSuper {get=>preferences.MapSuper;set{preferences.MapSuper=value;Changed();}}
@@ -106,11 +107,13 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
  }
  public LinkModel() {
   try { preferences=JsonSerializer.Deserialize<Preferences>(File.ReadAllText(Path.Combine(folder,"preferences.json")))??new(); } catch { preferences=new(); }
+  try{PrepareIdentity();}catch(Exception e){LocalFingerprint="本机身份暂不可用";Log("身份准备失败："+e.Message);}
   ConfigureDiscovery();
   NetworkChange.NetworkAddressChanged+=NetworkChanged;
   SystemEvents.PowerModeChanged+=PowerChanged;
   if(AutoConnect) _=Task.Delay(1000).ContinueWith(_=>Application.Current.Dispatcher.Invoke(Start));
  }
+ private void PrepareIdentity(){LocalFingerprint=LinkIdentity.Prepare(folder,Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),"Deskflow","tls"));Changed(nameof(LocalFingerprint));}
  public void ConfigureDiscovery() {
   discovery?.Dispose();discovery=null;
   if(disposed||!AutoDiscover||Server){DiscoveryStatus="使用手动连接地址";return;}
@@ -153,13 +156,13 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
  public void Start() {
   if(disposed)return;
   if(Running)return;
-  if(!File.Exists(engine)){MessageBox.Show("请先安装 Deskflow 1.27.0 的 Windows x64 版本。","LinkDesk");return;}
+  if(!File.Exists(engine)){MessageBox.Show("安装包中的连接核心不完整。请重新解压整个 LinkDesk 安装包，不要只复制 LinkDesk.exe。","LinkDesk");return;}
   if(Process.GetProcessesByName("deskflow").Any()||Process.GetProcessesByName("deskflow-core").Any()){MessageBox.Show("请先从系统托盘退出原版 Deskflow，然后在 LinkDesk 启动连接。","LinkDesk");return;}
   if(!Name(LocalName)||!Name(PeerName)||LocalName==PeerName){MessageBox.Show("电脑名称仅支持字母、数字、点、短横线和下划线，两台不能重名。","LinkDesk");return;}
   if(!Server&&!Regex.IsMatch(Host,@"^[A-Za-z0-9_.:\[\]-]{1,255}$")){MessageBox.Show("请输入有效的共享端地址。","LinkDesk");return;}
-  if(!File.Exists(Path.Combine(tlsFolder,"deskflow.pem"))){MessageBox.Show("请先在原版 Deskflow 完成一次加密连接。LinkDesk 沿用已有证书和配对。","LinkDesk");return;}
+  if(!File.Exists(Path.Combine(Path.GetDirectoryName(engine)!,"settings","Deskflow.conf"))){MessageBox.Show("连接核心的便携配置缺失，请重新解压完整安装包。","LinkDesk");return;}
   try {
-   WriteConfiguration();
+   PrepareIdentity();WriteConfiguration();
    AutoConnect=true;Save();desired=true;failures=0;Launch();
   }catch(Exception e){MessageBox.Show("无法启动："+e.Message,"LinkDesk");}
  }
@@ -178,6 +181,7 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
   if(Process.GetProcessesByName("deskflow").Any()||Process.GetProcessesByName("deskflow-core").Any()){desired=false;Running=false;Status="另一个连接正在运行";Detail="请先退出原版 Deskflow，再启动 LinkDesk。";return;}
   long id=++generation;seen.Clear();Connected=false;session=new();
   var p=new Process{StartInfo=new ProcessStartInfo(engine){UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true},EnableRaisingEvents=true};
+  p.StartInfo.Environment["XDG_STATE_HOME"]=folder;
   p.StartInfo.ArgumentList.Add(Server?"server":"client");p.StartInfo.ArgumentList.Add("--new-instance");p.StartInfo.ArgumentList.Add("--settings");p.StartInfo.ArgumentList.Add(Path.Combine(folder,"LinkDesk.conf"));
   void Line(object sender,DataReceivedEventArgs e){if(e.Data is null)return;Application.Current.Dispatcher.BeginInvoke(()=>{if(id!=generation)return;Log(e.Data);if(e.Data.Contains("FATAL")||e.Data.Contains("ERROR"))Detail="启动遇到问题，请查看连接日志。";});}
   p.OutputDataReceived+=Line;p.ErrorDataReceived+=Line;

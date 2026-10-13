@@ -95,6 +95,7 @@ final class LinkModel: ObservableObject {
     @Published var logs: [String] = []
     @Published var issue: String?
     @Published var pairing: String?
+    @Published var localFingerprint = "正在准备本机身份…"
     @Published var loginEnabled = false
     @Published var background = true { didSet { UserDefaults.standard.set(background, forKey: "background") } }
     @Published var autoConnect = false { didSet { UserDefaults.standard.set(autoConnect, forKey: "autoConnect") } }
@@ -118,8 +119,8 @@ final class LinkModel: ObservableObject {
     private var partial = ""
     private var coreReady = false
     private var handledFingerprints = Set<String>()
-    let settingsDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Deskflow")
-    let engine = URL(fileURLWithPath: "/Applications/Deskflow.app/Contents/MacOS/deskflow-core")
+    let settingsDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/LinkDesk")
+    let engine = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/deskflow-core")
     init() {
         let d = UserDefaults.standard
         background = d.object(forKey: "background") as? Bool ?? true
@@ -137,9 +138,14 @@ final class LinkModel: ObservableObject {
         verticalSpeed = d.object(forKey: "verticalSpeed") as? Double ?? 1
         horizontalSpeed = d.object(forKey: "horizontalSpeed") as? Double ?? 1
         allowDiscovery = d.object(forKey: "allowDiscovery") as? Bool ?? true
+        do { try prepareIdentity() } catch { localFingerprint = "本机身份暂不可用"; append(error.localizedDescription) }
         syncLogin(); refreshAddresses()
         watchNetwork()
         if autoConnect { DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.start() } }
+    }
+    private func prepareIdentity() throws {
+        let legacy = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Deskflow/tls")
+        localFingerprint = try LinkIdentity.prepare(at: settingsDir, legacy: legacy)
     }
     private func watchNetwork() {
         networkMonitor.pathUpdateHandler = { [weak self] path in
@@ -246,7 +252,7 @@ final class LinkModel: ObservableObject {
             return
         }
         guard FileManager.default.isExecutableFile(atPath: engine.path) else {
-            issue = "请先安装 Deskflow 1.27.0。LinkDesk 使用它的连接核心。"; return
+            issue = "安装包中的连接核心不完整，请重新下载完整 LinkDesk 安装包。"; return
         }
         if !NSRunningApplication.runningApplications(withBundleIdentifier: "org.deskflow.deskflow").isEmpty {
             issue = "请先从 Deskflow 菜单选择“退出 Deskflow”，再在这里启动。两个界面不能同时管理同一个连接核心。"; return
@@ -255,9 +261,7 @@ final class LinkModel: ObservableObject {
         do {
             let config = settingsDir.appendingPathComponent("linkdesk-server.conf")
             let text = try LinkConfiguration.settings(local: localName, peer: peerName, server: server, host: host, layout: layout, configPath: config.path, input: inputSettings)
-            guard FileManager.default.fileExists(atPath: settingsDir.appendingPathComponent("tls/deskflow.pem").path) else {
-                issue = "请先在原版 Deskflow 完成一次加密连接。LinkDesk 会沿用已有证书和配对，不会关闭加密。"; return
-            }
+            try prepareIdentity()
             try FileManager.default.createDirectory(at: settingsDir, withIntermediateDirectories: true)
             try text.write(to: settingsDir.appendingPathComponent("LinkDesk.conf"), atomically: true, encoding: .utf8)
             try LinkConfiguration.links(local: localName, peer: peerName, layout: layout).write(to: config, atomically: true, encoding: .utf8)
@@ -269,6 +273,7 @@ final class LinkModel: ObservableObject {
         generation = UUID(); let token = generation
         partial = ""; handledFingerprints.removeAll(); connected = false; coreReady = false
         let p = Process(); p.executableURL = engine
+        p.environment = ProcessInfo.processInfo.environment.merging(["XDG_STATE_HOME": settingsDir.path]) { _, new in new }
         p.arguments = [server ? "server" : "client", "--new-instance", "--settings", settingsDir.appendingPathComponent("LinkDesk.conf").path]
         let pipe = Pipe(); p.standardOutput = pipe; p.standardError = pipe
         pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
@@ -461,7 +466,7 @@ struct RootView: View {
                 }.padding(.top, 16)
                 Spacer()
                 Label("基于 Deskflow 1.27", systemImage: "lock.shield").font(.caption).foregroundStyle(.secondary)
-                Text("LinkDesk · 0.2.0").font(.caption2).foregroundStyle(.tertiary)
+                Text("LinkDesk · 0.3.0").font(.caption2).foregroundStyle(.tertiary)
             }.padding(24).frame(width: 210).frame(maxHeight: .infinity).background(.white.opacity(0.72))
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
@@ -505,6 +510,9 @@ struct RootView: View {
                 if model.server { Button("刷新地址") { model.refreshAddresses() }.buttonStyle(.borderless) }
                 Button(model.running ? "停止共享" : "启动共享") { model.running ? model.stop() : model.start() }.buttonStyle(.borderedProminent).tint(accent).controlSize(.large)
             }
+            Divider().padding(.top, 4)
+            Text("本机指纹 · 首次配对时供另一台电脑核对").font(.caption).foregroundStyle(.secondary)
+            Text(model.localFingerprint).font(.system(size: 11, design: .monospaced)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
         }.padding(26).background(.white, in: RoundedRectangle(cornerRadius: 22))
         VStack(alignment: .leading, spacing: 14) {
             Label("连接方式", systemImage: "arrow.triangle.branch").font(.headline)
@@ -543,7 +551,7 @@ struct RootView: View {
             HStack { Button("保存电脑信息") { model.save() }.buttonStyle(.bordered); Spacer() }
         }.disabled(model.running).padding(24).background(.white, in: RoundedRectangle(cornerRadius: 20))
         Button("打开设备控制权限设置") { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!) }.buttonStyle(.borderless)
-        Text("使用已有 Deskflow 安装及加密配对。首次使用请先在原版完成配对，然后退出原版。快捷键暂未设置。") .font(.caption).foregroundStyle(.secondary)
+        Text("已内置连接核心。首次配对请核对两端显示的本机指纹；已有配对会自动迁移。快捷键暂未设置。") .font(.caption).foregroundStyle(.secondary)
     }
     func settingRow(_ title: String, _ subtitle: String, _ value: Binding<Bool>) -> some View {
         HStack(spacing: 20) {

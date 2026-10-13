@@ -1,34 +1,45 @@
-# LinkDesk native frontend
+# LinkDesk 0.3.0 standalone native interfaces
 
-GPL-2.0-only. New native UI, implemented separately from Deskflow. Requires the user's existing Deskflow 1.27.0 installation and completed TLS setup. Deskflow binaries, certificates, keys and fingerprint databases are not shipped.
+GPL-2.0-only. SwiftUI/AppKit on macOS 13+ arm64; WPF on Windows x64 with self-contained .NET 10. The packages embed the unmodified Deskflow 1.27.0 core and required Qt/OpenSSL/C++ runtime files. End users do not install Deskflow or run its GUI.
 
-- macOS: SwiftUI / AppKit / SMAppService, arm64, macOS 13+.
-- Windows: WPF / NotifyIcon / HKCU Run, net10.0-windows, self-contained win-x64.
-- Transport: installed deskflow-core with a separate settings file; TLS and peer fingerprint checking always enabled.
-- State: Deskflow 1.27 newline IPC, Unix socket on macOS and named pipe on Windows. The IPC version handshake negotiates the actual installed core version and replays queued messages.
-- Peer trust: explicit user confirmation, SHA-256 validation, original trusted-client/server databases.
-- Process: desktop mode only; existing GUI/core conflict prevention; bounded retries; terminate only owned child processes. macOS adds a 10-second startup handshake timeout.
-- Startup: operating-system registration; close-to-background is independent of registration.
-- Switching shortcuts: intentionally unchanged and no new switching hotkeys added.
-- Input settings: sender-owned per-peer modifier remapping (Command/Super and Meta share the selected mapping); receiver-owned X/Y scroll inversion and scaling. Local physical input and Mos preferences are unchanged. The Mac defaults to the user's chosen Command→Ctrl / Control→Super preset. The Windows receiver defaults to vertical inversion for this setup; reset returns to core defaults.
+## Build
 
-See `../使用说明.md`. Build with `scripts/build-mac.sh` or `scripts/build-windows.ps1`.
+Packaging requires the official upstream binary distribution as a build input, plus the notices in `third-party`. This is a developer build dependency, not an installed-app dependency.
 
-Configuration checks:
-`swiftc -parse-as-library macOS/Configuration.swift tests/ConfigurationTests.swift -o /tmp/linkdesk-tests && /tmp/linkdesk-tests`
+macOS: point `LINKDESK_DESKFLOW_APP` at the official extracted Deskflow.app, then run `scripts/build-mac.sh`. The default build input is `/Applications/Deskflow.app`. The output embeds its core in `Contents/MacOS`, frameworks in `Contents/Frameworks`, and plugins in `Contents/PlugIns`. It is locally signed, not notarized.
 
-Windows runtime verification is still required; cross-compilation cannot validate Windows UI, privilege behavior or named-pipe runtime behavior.
+Windows: extract the official Deskflow 1.27.0 x64 portable ZIP, set `LINKDESK_DESKFLOW_WINDOWS` to the extracted directory, then run `scripts/build-windows.ps1` with .NET 10 SDK and Python 3. The output has LinkDesk.exe, core/ and ThirdParty/. Ship the entire folder. See `third-party/README.md` for upstream notices and source archives.
 
-`tests/InputSettingsTests.cs` is a standalone console entry point for Windows input configuration checks. Compile it with `Windows/InputConfiguration.cs` in a net10.0 console project; it checks modifier validation, scroll bounds, and culture-independent serialization. The normal WPF project excludes this tests directory.
+## Identity and process isolation
 
-## 0.2.0 recovery and discovery
+macOS uses `~/Library/Application Support/LinkDesk`; Windows uses `%LOCALAPPDATA%/LinkDesk`. New identities are RSA-2048 self-signed SHA-256 certificates, generated locally. Existing Deskflow identities and pairing databases are copied once when the LinkDesk identity does not exist. Existing broken identities cause an error rather than being silently replaced. Fingerprints are SHA-256 over DER certificates and are shown in both connection pages.
 
-macOS watches NWPathMonitor and NSWorkspace wake notifications; Windows watches NetworkAddressChanged and PowerModeChanged. Recovery requests are debounced, recheck saved auto-connect intent, and recycle only owned core processes. Explicit stop disables automatic recovery. A temporary startup IPC connection delay is retried on macOS.
+The Windows embedded core includes a clean `core/settings/Deskflow.conf` portable marker. This makes the upstream core use the explicitly passed per-user settings folder for TLS, instead of its normal ProgramData/Deskflow folder. Both platforms set XDG_STATE_HOME to the LinkDesk profile. Desktop process mode is used; only owned child processes are terminated. Core IPC stays the upstream Unix socket/named pipe protocol, with version negotiation.
 
-Mac servers answer IPv4 UDP queries on port 24801 only while their core is ready and discovery is enabled. Each response contains a public DER certificate and an RSA/ECDSA SHA-256 signature over `LinkDesk/1\n<nonce>\n<name>\n<source IPv4>\n24800\n`. Windows compares the certificate's SHA-256 hash with the existing trusted-servers database, validates the fresh query nonce and expected computer name, verifies the signature, and requires the signed IP to match the datagram sender. No private keys are transmitted. The input connection continues to require TLS and the original fingerprint validation.
+TLS and fingerprint validation remain mandatory. Unknown peers require explicit fingerprint confirmation. No personal certificates, private keys, settings or pairing databases are packaged.
 
-Windows probes the previous IPv4 address and current adapter broadcasts, with a three-second query window and periodic retries. Discovery does not cross routed subnets; blocked broadcasts can require manual IP fallback. The reverse Windows-server/Mac-client role still uses a manual address.
+## Recovery and discovery
 
-Icons: native ICNS and ICO assets are included. Recreate with `swift scripts/generate-icons.swift <render-directory>` then `python3 scripts/package-icons.py <render-directory> assets`. No paid APIs or external artwork are used.
+macOS watches NWPathMonitor and NSWorkspace wake notifications; Windows watches NetworkAddressChanged and PowerModeChanged. Debounced recovery respects manual stop and saved auto-connect intent. Healthy connections are retained. Repeated failed launches use bounded retries.
 
-Tests: `tests/DiscoveryTests.cs` with `Windows/Discovery.cs` in a net10.0 console project tests authenticated discovery and rejects replay/tampering. `tests/DiscoveryResponderTests.swift` provides a responder using a temporary test PEM. `python3 scripts/test-recovery-mac.py` tests the actual recovery model with isolated preferences and an intentionally unavailable core. It simulates a wake notification; it does not put the user's Mac to sleep.
+Mac servers answer IPv4 UDP queries on port 24801 while their core is ready. Windows validates the pinned certificate, fresh nonce, expected peer name, signed source IP and RSA/ECDSA signature before updating the saved address. This supports already-paired Mac-server/Windows-client connections; initial pairing and reverse roles use manual addresses. The input connection uses TLS on TCP 24800.
+
+## Input and icons
+
+Sender-owned per-peer modifier mapping; receiver-owned X/Y scroll inversion and scaling. Local input and Mos preferences are untouched. No new switching hotkeys. Native ICNS/ICO assets are included; generator scripts use AppKit and the Python standard library.
+
+## Tests
+
+From this directory:
+
+```sh
+swiftc -parse-as-library macOS/Configuration.swift tests/ConfigurationTests.swift -o /tmp/linkdesk-config-tests
+/tmp/linkdesk-config-tests
+swiftc -parse-as-library macOS/Identity.swift tests/IdentityTests.swift -o /tmp/linkdesk-identity-tests
+/tmp/linkdesk-identity-tests
+python3 scripts/test-recovery-mac.py
+```
+
+C# test entry points are standalone console programs, compiled with .NET 10: InputSettingsTests.cs with InputConfiguration.cs; DiscoveryTests.cs with Discovery.cs; IdentityTests.cs with Identity.cs and Discovery.cs. Identity tests generate temporary test identities, verify stable reuse and migration, reject corrupt files without rotation, and verify signed discovery. Swift identity tests additionally verify private-file permissions and optionally compare a C#-generated PEM/fingerprint passed as two arguments.
+
+Tests validate the model and protocols. Cross-compilation and dependency inspection cannot replace actual Windows connection testing. See `../验证记录.md` for actual outcomes and remaining limits.

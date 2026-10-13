@@ -56,7 +56,7 @@ public sealed class DiscoveryClient : IDisposable {
     if(Interlocked.Exchange(ref refresh,0)==1||DateTime.UtcNow>=next) {
      next=DateTime.UtcNow.AddSeconds(connected()?20:6);
      var trusted=File.Exists(database)?File.ReadAllLines(database):Array.Empty<string>();
-     if(!trusted.Any(s=>s.StartsWith("v2:sha256:")))status("请先完成 Mac 的加密配对，或使用手动 IP。");
+     if(!trusted.Any(s=>s.StartsWith("v2:sha256:")))status("首次连接请填写 Mac 显示的地址，再点击“启动共享”并核对指纹。");
      else {
       using var udp=new UdpClient(AddressFamily.InterNetwork){EnableBroadcast=true};
       udp.Client.Bind(new IPEndPoint(IPAddress.Any,0));

@@ -1,61 +1,51 @@
 # LinkDesk
 
-为 Mac 与 Windows 键鼠共享制作的原生界面。Mac 使用 SwiftUI，Windows 使用 WPF。当前版本 **0.2.0**，采用 GPL-2.0-only 许可。
+Mac 与 Windows 键鼠共享的原生界面，当前版本 **0.3.0 独立版**。Mac 使用 SwiftUI，Windows 使用 WPF。
 
-> **当前版本需要在两台电脑安装 Deskflow 1.27.0，并先通过原版完成一次加密配对。**
-> LinkDesk 0.2.0 调用已有的 Deskflow 连接核心，安装包没有包含该核心。卸载 Deskflow 后，LinkDesk 无法启动共享。
-> Windows 包内置 .NET 运行时，这不代表已经内置 Deskflow。
+**两端无需安装 Deskflow。** 安装包内置 Deskflow 1.27.0 连接核心及必要运行库。Windows 同时包含 .NET 运行时。证书由 LinkDesk 本地生成，首次配对在两端核对指纹后完成；升级可迁移原有证书和配对记录。
+
+## 下载与使用
+
+完整程序和上游源码资料见 [v0.3.0 发布页](https://github.com/vvanjune/LinkDesk/releases/tag/v0.3.0)。这是本地测试版本，Mac 使用临时签名，尚未公证。
+
+- Mac：解压后把完整 LinkDesk.app 放入应用程序目录，并授予设备控制权限。
+- Windows：完整解压后运行 LinkDesk.exe，保留旁边的 core 和 ThirdParty 文件夹。不要只复制 EXE。
+- 首次连接：Mac 共享、Windows 接收；核对两端电脑名称，Windows 填 Mac 显示的地址并启动。出现配对提示时核对另一端的本机指纹。
+
+详见 [使用说明](使用说明.md)。
 
 ## 功能
 
-- Mac 键盘和鼠标控制 Windows，支持电脑位置设置。
-- 开机登录时启动、关闭窗口后留在后台。
-- 共享端修饰键映射，接收端独立设置滚轮方向与速度。
-- 网络恢复、电脑唤醒后尝试自动恢复连接；手动停止会关闭自动连接。
+- 登录后自启动、关闭窗口留在后台。
+- 网络恢复和唤醒后尝试自动恢复连接，尊重手动停止。
 - Windows 自动发现已配对的 Mac，验证身份后更新地址。
-- TLS 加密连接与指纹确认。
-- 两个平台的应用图标；Mac 侧栏整块按钮均可点击。
+- 按键映射、远程滚轮方向与速度设置。
+- 必须使用 TLS 加密和指纹验证；两端可查看本机指纹。
+- 原生图标与 Mac 侧栏完整点击范围。
 
-自动发现目前支持 **Mac 共享端 → Windows 接收端**，需要位于同一局域网；其他方向使用手动地址。没有新增切换快捷键。
+自动发现支持同一 IPv4 局域网内的 Mac 共享端 → Windows 接收端；首次配对和反向角色使用手动地址。没有新增切换快捷键。
 
-## 安装与使用
+## 数据位置
 
-1. 在两台电脑安装 [Deskflow 1.27.0](https://github.com/deskflow/deskflow/releases/tag/v1.27.0)。
-2. 在原版完成一次加密连接，随后从菜单栏或托盘彻底退出原版。
-3. 打开 LinkDesk，设置两台电脑的名称和用途，在 Mac 授予设备控制权限后启动共享。
+Mac：`~/Library/Application Support/LinkDesk/`；Windows：`%LOCALAPPDATA%/LinkDesk/`。证书、私钥和配对数据库在各自用户目录创建，均不上传到本仓库，也不随安装包分发。
 
-详见 [使用说明](使用说明.md)。本仓库提交的是源码、图标与说明，不含编译后的安装包、个人证书、私钥或配对数据库。
+## 开发与构建
 
-## 从源码构建
-
-Mac 需要 Apple Silicon、macOS 13 或更新版本及 Swift 工具链：
+源码位于 source。macOS 需要 Swift 工具链及 Python 3；Windows 需要 .NET 10 SDK、PowerShell 与 Python 3。**构建时**需要官方 Deskflow 二进制包作为嵌入核心的输入，最终安装包不依赖外部安装。
 
 ```sh
-sh source/scripts/build-mac.sh
+LINKDESK_DESKFLOW_APP=/path/to/Deskflow.app sh source/scripts/build-mac.sh
 ```
 
-生成的应用位于 `macOS/LinkDesk.app`。脚本使用本地临时签名；更换构建后可能需要重新授予设备控制权限。
-
-Windows 需要 .NET 10 SDK，使用 PowerShell：
-
 ```powershell
+$env:LINKDESK_DESKFLOW_WINDOWS = 'C:\path\to\official-portable-folder'
 ./source/scripts/build-windows.ps1
 ```
 
-生成自包含的 x64 程序，输出位于 `Windows/`。两个构建脚本均不会安装或捆绑 Deskflow 核心。
+测试、内置文件布局及发现协议见 [技术说明](source/README.md)；实测结果和限制见 [验证记录](验证记录.md)。
 
-技术说明与测试方法见 [source/README.md](source/README.md)。
+## 许可与上游
 
-## 验证范围
+LinkDesk 源码采用 [GPL-2.0-only](LICENSE)。传输核心来自 [Deskflow](https://github.com/deskflow/deskflow)。核心源码行为未修改；macOS 将嵌入程序与运行库一起进行本地签名。上游许可、Qt/OpenSSL/.NET/C++ 运行库声明见 [third-party](source/third-party/README.md)。上游源码档案与安装包在同一发布页提供。
 
-两台实机已验证加密连接、Windows 自动发现已配对的 Mac，以及热点关闭后重新开启时自动恢复连接。Mac 侧栏点击范围已实测。
-
-不同 IP 下的发现已通过签名协议测试；真实 IP 变化及两台电脑实际睡眠、唤醒后的恢复尚未单独实测。完整记录见 [验证记录](验证记录.md)。当前为本地测试版本，尚未验证登录前控制或 Windows UAC 安全桌面。
-
-## 独立安装版本
-
-移除外部安装依赖需要内置 Deskflow 核心及必要运行库，并由 LinkDesk 完成证书生成、首次配对和指纹管理。这些功能 **尚未在 0.2.0 实现**。
-
-## 许可
-
-LinkDesk 源码采用 [GPL-2.0-only](LICENSE)。传输核心来自 [Deskflow](https://github.com/deskflow/deskflow)，本仓库没有分发其二进制程序。打包独立版本时还需保留上游与第三方许可，并提供对应源码。
+0.2.0 曾依赖已有 Deskflow 安装，0.3.0 已将该依赖移入安装包并增加独立身份管理。

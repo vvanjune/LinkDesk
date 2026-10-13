@@ -18,6 +18,9 @@
      </Grid>
      <Border Height="1" Background="#EDEDF1" Margin="0,24,0,20"/>
      <Grid><StackPanel><TextBlock Text="连接地址" Foreground="#8A8E9C" FontSize="12"/><TextBlock Text="{Binding Address}" FontFamily="Consolas" FontSize="19" Margin="0,8,0,0"/><TextBlock Text="{Binding DiscoveryStatus}" FontSize="11" Foreground="#8A8E9C" Margin="0,7,170,0" TextWrapping="Wrap"/></StackPanel><Button Content="{Binding StartLabel}" Click="ToggleConnection" Background="#4C52D4" Foreground="White" HorizontalAlignment="Right" VerticalAlignment="Center"/></Grid>
+     <Border Height="1" Background="#EDEDF1" Margin="0,20,0,14"/>
+     <TextBlock Text="本机指纹 · 首次配对时供另一台电脑核对" FontSize="12" Foreground="#8A8E9C"/>
+     <TextBox Text="{Binding LocalFingerprint,Mode=OneWay}" IsReadOnly="True" TextWrapping="Wrap" FontFamily="Consolas" FontSize="11" BorderThickness="0" Background="White" Padding="0" Margin="0,8,0,0" AutomationProperties.Name="本机指纹"/>
     </StackPanel></Border>
     <Border Background="#FCFCFA" CornerRadius="18" Padding="24" Margin="0,22,0,0"><StackPanel><TextBlock Text="连接方式" FontWeight="Bold"/><TextBlock Text="接收 Mac 的键鼠时，切换位置由 Mac 共享端设置。" TextWrapping="Wrap" Margin="0,12,0,0" Foreground="#7C8090"/><Button Content="编辑电脑信息" Click="ShowSettings" HorizontalAlignment="Left" Margin="0,18,0,0"/></StackPanel></Border>
    </StackPanel>
@@ -30,10 +33,10 @@
     <Border Background="White" CornerRadius="20" Padding="24" Margin="0,22,0,0"><StackPanel IsEnabled="{Binding CanEdit}"><TextBlock Text="电脑与网络" FontWeight="Bold" Margin="0,0,0,18"/><CheckBox Content="共享本机键鼠（通常保持关闭，由 Mac 共享）" IsChecked="{Binding Server}" Margin="0,0,0,16"/>
      <TextBlock Text="本机名称" Foreground="#7C8090"/><TextBox Text="{Binding LocalName,UpdateSourceTrigger=PropertyChanged}" Margin="0,6,0,14"/>
      <TextBlock Text="另一台电脑名称" Foreground="#7C8090"/><TextBox Text="{Binding PeerName,UpdateSourceTrigger=PropertyChanged}" Margin="0,6,0,14"/>
-     <CheckBox Content="自动查找已配对的 Mac" IsChecked="{Binding AutoDiscover}" Margin="0,4,0,12"/><TextBlock Text="自动模式使用核验后的地址；找不到时尝试上次地址。取消勾选可手动填写。" TextWrapping="Wrap" FontSize="12" Foreground="#8A8E9C" Margin="0,0,0,16"/><TextBlock Text="共享端 IP 地址 / 上次地址" Foreground="#7C8090"/><TextBox IsEnabled="{Binding CanManualHost}" Text="{Binding Host,UpdateSourceTrigger=PropertyChanged}" Margin="0,6,0,14"/>
+     <CheckBox Content="自动查找已配对的 Mac" IsChecked="{Binding AutoDiscover}" Margin="0,4,0,12"/><TextBlock Text="自动模式使用核验后的地址；找不到时尝试上次地址。首次配对可直接填写 Mac 地址。" TextWrapping="Wrap" FontSize="12" Foreground="#8A8E9C" Margin="0,0,0,16"/><TextBlock Text="共享端 IP 地址 / 上次地址" Foreground="#7C8090"/><TextBox IsEnabled="{Binding CanManualHost}" Text="{Binding Host,UpdateSourceTrigger=PropertyChanged}" Margin="0,6,0,14"/>
      <Button Content="保存电脑信息" Click="SaveSettings" HorizontalAlignment="Left"/>
     </StackPanel></Border>
-    <TextBlock Text="使用已有 Deskflow 安装及加密配对。默认桌面模式，不依赖后台服务。快捷键暂未设置。" TextWrapping="Wrap" FontSize="12" Foreground="#8A8E9C" Margin="0,18,0,0"/>
+    <TextBlock Text="已内置连接核心。首次配对请核对两端的本机指纹；已有配对自动迁移。无需后台服务。" TextWrapping="Wrap" FontSize="12" Foreground="#8A8E9C" Margin="0,18,0,0"/>
    </StackPanel>
 <StackPanel x:Name="InputPage" Visibility="Collapsed">
 <Border Background="White" CornerRadius="20" Padding="24"><StackPanel>
