@@ -1,0 +1,27 @@
+[
+  {
+    "file": "deskflow-1.27.0-source.tar.gz",
+    "sha256": "d6a64f306befa9790ca05a8f815bdcad7e30878681c8b8a1ff9b72933b70f621",
+    "archive_root": "deskflow-deskflow-90376df"
+  },
+  {
+    "file": "openssl-3.6.4-source.tar.gz",
+    "sha256": "049128f3a97250b2de0e3dbe2f2edda7e6b1d4afa671302ce3fa62b327b8591c",
+    "archive_root": "openssl-openssl-360ffdb"
+  },
+  {
+    "file": "openssl-3.6.5-source.tar.gz",
+    "sha256": "c0828bc85c80a7ceaa5a3ac669d25da75bb4c24b992c69abe02437a37b1d10ff",
+    "archive_root": "openssl-openssl-f93be98"
+  },
+  {
+    "file": "qtbase-6.11.3-source.tar.gz",
+    "sha256": "7717cc3d4627c74c703bbf4c1d2206c89d37efc5da7b3bc5d115c865fb57ae78",
+    "archive_root": "qt-qtbase-08c5ae8"
+  },
+  {
+    "file": "qtsvg-6.11.3-source.tar.gz",
+    "sha256": "a8b2e8d081ea72ee0233694a7c55de99ad41cd2b0ff8e9c2bf34a8c6ac268a5a",
+    "archive_root": "qt-qtsvg-bb73f70"
+  }
+]
