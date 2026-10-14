@@ -40,7 +40,9 @@ if args.platform == "mac":
     if "@loader_path/../Frameworks" not in rpaths:
         subprocess.run(["install_name_tool", "-add_rpath", "@loader_path/../Frameworks", str(prepared)], check=True)
     patch = Path(__file__).resolve().parent.parent / "core-patches/mac-display-safety.patch"
-    (destination / "MacOS/linkdesk-core.json").write_text(json.dumps({
+    (destination / "Resources").mkdir(parents=True, exist_ok=True)
+    (destination / "MacOS/linkdesk-core.json").unlink(missing_ok=True)
+    (destination / "Resources/linkdesk-core.json").write_text(json.dumps({
         "displaySafetyVersion": 1, "sha256": hashlib.sha256(prepared.read_bytes()).hexdigest(),
         "builtCoreSha256": patched_hash, "upstreamVersion": "1.27.0",
         "upstreamRef": "90376dfaba2c28dd61c5d4453ae5641c6edec5a3",

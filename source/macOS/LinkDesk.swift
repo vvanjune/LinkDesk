@@ -432,7 +432,8 @@ final class LinkModel: ObservableObject {
         } catch { issue = error.localizedDescription }
     }
     private func verifyProtectedCore() throws {
-        let manifest = engine.deletingLastPathComponent().appendingPathComponent("linkdesk-core.json")
+        let directory = engine.deletingLastPathComponent()
+        let manifest = directory.lastPathComponent == "MacOS" ? directory.deletingLastPathComponent().appendingPathComponent("Resources/linkdesk-core.json") : directory.appendingPathComponent("linkdesk-core.json")
         let metadata = try JSONSerialization.jsonObject(with: Data(contentsOf: manifest)) as? [String: Any]
         let hash = SHA256.hash(data: try Data(contentsOf: engine)).map { String(format: "%02x", $0) }.joined()
         guard metadata?["displaySafetyVersion"] as? Int == 1, metadata?["sha256"] as? String == hash else { throw NSError(domain: "LinkDesk", code: 9, userInfo: [NSLocalizedDescriptionKey: "显示保护核心校验失败，请重新下载完整安装包。"] ) }
