@@ -38,18 +38,31 @@ jobs:
           repository: openssl/openssl
           ref: f93be98fe7c796e92fc999dd1a21a5212d4e4f8e
           path: openssl-src
-      - name: Build matching OpenSSL 3.6.5 import libraries
+      - name: Prepare matching OpenSSL headers and DLL import libraries
         shell: pwsh
         run: |
+          Invoke-WebRequest https://github.com/deskflow/deskflow/releases/download/v1.27.0/deskflow-1.27.0-win-x64-portable.zip -OutFile official.zip
+          if ((Get-FileHash official.zip -Algorithm SHA256).Hash.ToLower() -ne '8d19004cc3625623489d96580c1b58fd13ee78185689907fd4478595f93fab9a') { throw 'Upstream checksum mismatch' }
+          Expand-Archive official.zip official
           $perl = 'C:/Strawberry/perl/bin/perl.exe'
           if (!(Test-Path $perl)) { throw 'Windows native Strawberry Perl is required' }
           Push-Location openssl-src
           & $perl Configure VC-WIN64A no-tests no-asm
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          nmake /nologo build_libs
+          nmake /nologo build_generated
           $result = $LASTEXITCODE
           Pop-Location
           if ($result -ne 0) { exit $result }
+          # Link directly to the checksummed, unchanged DLLs shipped to users.
+          # Generate import stubs from their exact exports, not replacement DLLs.
+          foreach ($name in @('crypto','ssl')) {
+            $dll=Get-ChildItem official -Recurse -Filter "lib$name-3-x64.dll" | Select-Object -First 1
+            $exports=@(dumpbin /nologo /exports $dll.FullName | ForEach-Object { if ($_ -match '^\s+\d+\s+[0-9A-F]+\s+[0-9A-F]+\s+([A-Za-z_][A-Za-z_0-9]*)') { $matches[1] } })
+            if ($exports.Count -lt 100) { throw 'OpenSSL export extraction failed' }
+            @('LIBRARY "'+$dll.Name+'"','EXPORTS')+$exports | Set-Content -Encoding ascii "openssl-src/lib$name.def"
+            lib /nologo /machine:x64 /def:"openssl-src/lib$name.def" /out:"openssl-src/lib$name.lib"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
       - name: Configure core
         shell: pwsh
         run: |
@@ -67,9 +80,6 @@ jobs:
       - name: Verify against official Windows runtime
         shell: pwsh
         run: |
-          Invoke-WebRequest https://github.com/deskflow/deskflow/releases/download/v1.27.0/deskflow-1.27.0-win-x64-portable.zip -OutFile official.zip
-          if ((Get-FileHash official.zip -Algorithm SHA256).Hash.ToLower() -ne '8d19004cc3625623489d96580c1b58fd13ee78185689907fd4478595f93fab9a') { throw 'Upstream checksum mismatch' }
-          Expand-Archive official.zip official
           $original = Get-ChildItem official -Recurse -Filter deskflow-core.exe | Select-Object -First 1
           Copy-Item build/bin/deskflow-core.exe $original.FullName -Force
           Push-Location $original.DirectoryName
