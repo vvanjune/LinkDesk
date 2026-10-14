@@ -9,6 +9,8 @@ import Foundation
   precondition(LinkConfiguration.fingerprintLine("00:01") == nil)
   let path="/Users/a folder/Library/Deskflow/linkdesk-server.conf"
   let config=try LinkConfiguration.settings(local:"Mac",peer:"Windows",server:true,host:"",layout:"down",configPath:path)
+  precondition(config.contains("macWakeDisplayOnRemoteInput=false")); precondition(config.contains("macScreenSaverSync=false")); precondition(config.contains("preventSleep=false"));
+  let wake = try LinkConfiguration.settings(local:"Mac",peer:"Windows",server:false,host:"192.0.2.10",layout:"right",configPath:path,wakeDisplay:true); precondition(wake.contains("macWakeDisplayOnRemoteInput=true"));
   precondition(config.contains("tlsEnabled=true")); precondition(config.contains("checkPeerFingerprints=true"));precondition(config.contains(path))
   let links=LinkConfiguration.links(local:"Mac",peer:"Windows",layout:"down")
   precondition(links.contains("down = Windows"));precondition(links.contains("up = Mac"));precondition(!links.contains("keystroke"))

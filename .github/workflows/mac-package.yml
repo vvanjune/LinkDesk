@@ -1,0 +1,75 @@
+name: Package verified Mac 0.4.4
+on:
+  workflow_dispatch:
+    inputs:
+      core_run:
+        description: Successful Mac display-safe core run ID
+        required: true
+permissions:
+  contents: read
+  actions: read
+jobs:
+  package:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify core provenance and download
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CORE_RUN: ${{ inputs.core_run }}
+        run: |
+          set -eu
+          gh run view "$CORE_RUN" --repo "$GITHUB_REPOSITORY" --json conclusion,name,headSha > run.json
+          python3 - <<'PY'
+          import json,subprocess
+          run=json.load(open('run.json'))
+          assert run['conclusion']=='success' and run['name']=='Mac display-safe core'
+          subprocess.run(['git','fetch','origin',run['headSha']],check=True)
+          subprocess.run(['git','diff','--exit-code',run['headSha'],'HEAD','--','source/core-patches/mac-display-safety.patch'],check=True)
+          PY
+          gh run download "$CORE_RUN" --repo "$GITHUB_REPOSITORY" -n linkdesk-display-safe-core-arm64 -D artifact
+          chmod +x artifact/build/bin/deskflow-core
+      - name: Verify actual Mac recovery model and configuration
+        run: |
+          python3 source/scripts/test-recovery-mac.py
+          swiftc -parse-as-library source/macOS/Configuration.swift source/tests/ConfigurationTests.swift -o config-tests
+          ./config-tests
+      - name: Assemble independent app from verified official runtime
+        env:
+          CORE_RUN: ${{ inputs.core_run }}
+        run: |
+          set -eu
+          curl -L --fail https://github.com/deskflow/deskflow/releases/download/v1.27.0/deskflow-1.27.0-macos-arm64.dmg -o official.dmg
+          echo 'dd21e79e566314394214906d3338c505d337af536fc580c022ee3fadffad0c97  official.dmg' | shasum -a 256 -c -
+          mkdir -p "$RUNNER_TEMP/deskflow-runtime"
+          hdiutil attach official.dmg -nobrowse -readonly -mountpoint "$RUNNER_TEMP/deskflow-runtime"
+          export LINKDESK_DESKFLOW_APP="$RUNNER_TEMP/deskflow-runtime/Deskflow.app"
+          export LINKDESK_PATCHED_MAC_CORE="$PWD/artifact/build/bin/deskflow-core"
+          sh source/scripts/build-mac.sh "$PWD/package"
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib,json,plistlib,os
+          app=Path('package/LinkDesk.app');contents=app/'Contents'
+          version=plistlib.loads((contents/'Info.plist').read_bytes())['CFBundleShortVersionString']
+          assert version==Path('source/VERSION').read_text().strip()=='0.4.4'
+          metadata=json.loads((contents/'Resources/linkdesk-core.json').read_text())
+          assert hashlib.sha256((contents/'MacOS/deskflow-core').read_bytes()).hexdigest()==metadata['sha256']
+          manifest=json.loads((contents/'Resources/ThirdParty/runtime-files.json').read_text())
+          for name,digest in manifest.items(): assert hashlib.sha256((contents/name).read_bytes()).hexdigest()==digest,name
+          assert not any(p.suffix.lower() in {'.pem','.key','.p12','.pfx','.log'} or p.name in {'devices.json','preferences.json'} for p in contents.rglob('*') if p.is_file())
+          (contents/'Resources/build-inputs.json').write_text(json.dumps({'version':version,'coreRun':os.environ['CORE_RUN'],'sourceCommit':os.environ['GITHUB_SHA']},indent=2)+'\n')
+          PY
+          codesign --force --sign - package/LinkDesk.app
+          codesign --verify --deep --strict package/LinkDesk.app
+          package/LinkDesk.app/Contents/MacOS/deskflow-core --version
+          ditto -c -k --sequesterRsrc --keepParent package/LinkDesk.app LinkDesk-macOS-AppleSilicon-0.4.4.zip
+          shasum -a 256 LinkDesk-macOS-AppleSilicon-0.4.4.zip > SHA256SUMS.txt
+          hdiutil detach "$RUNNER_TEMP/deskflow-runtime"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LinkDesk-macOS-0.4.4
+          path: |
+            LinkDesk-macOS-AppleSilicon-0.4.4.zip
+            SHA256SUMS.txt
+          retention-days: 14
