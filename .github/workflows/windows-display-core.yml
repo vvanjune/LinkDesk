@@ -59,7 +59,10 @@ jobs:
             $dll=Get-ChildItem official -Recurse -Filter "lib$name-3-x64.dll" | Select-Object -First 1
             $exports=@(dumpbin /nologo /exports $dll.FullName | ForEach-Object { if ($_ -match '^\s+\d+\s+[0-9A-F]+\s+[0-9A-F]+\s+([A-Za-z_][A-Za-z_0-9]*)') { $matches[1] } })
             if ($exports.Count -lt 100) { throw 'OpenSSL export extraction failed' }
-            @('LIBRARY "'+$dll.Name+'"','EXPORTS')+$exports | Set-Content -Encoding ascii "openssl-src/lib$name.def"
+            $definition=@('LIBRARY "'+$dll.Name+'"')
+            $definition+='EXPORTS'
+            $definition+=$exports
+            $definition | Set-Content -Encoding ascii "openssl-src/lib$name.def"
             lib /nologo /machine:x64 /def:"openssl-src/lib$name.def" /out:"openssl-src/lib$name.lib"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
