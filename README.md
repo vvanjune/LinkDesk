@@ -4,7 +4,9 @@
 
 ## 下载与连接
 
-Mac、Windows 完整包及新版源码见 [v0.4.2 发布页](https://github.com/vvanjune/LinkDesk/releases/tag/v0.4.2)。未改动的上游源码资料继续使用 [v0.4.0 发布页](https://github.com/vvanjune/LinkDesk/releases/tag/v0.4.0)。这是测试发布，Mac 使用本地签名、尚未公证，Windows 尚未进行发布签名。支持 Apple Silicon Mac 与 Windows x64。
+0.4.2 修复源码见 [源码发布页](https://github.com/vvanjune/LinkDesk/releases/tag/v0.4.2)。双端完整安装包已构建和校验，但 GitHub 大文件上传多次超时，当前发布页暂不提供 0.4.2 安装包。此前的完整包及未改动的上游源码资料见 [v0.4.0 发布页](https://github.com/vvanjune/LinkDesk/releases/tag/v0.4.0)；旧版安装包仍有本次已修复的用途缓存问题。
+
+这是测试发布，Mac 使用本地签名、尚未公证，Windows 尚未进行发布签名。支持 Apple Silicon Mac 与 Windows x64。
 
 1. Mac 将完整 LinkDesk.app 放入应用程序，允许设备控制；Windows 完整解压后运行 LinkDesk.exe，保留 core 和 ThirdParty 文件夹。
 2. 两台电脑连接可互通的局域网，一端选择共享键鼠、另一端选择接收。
