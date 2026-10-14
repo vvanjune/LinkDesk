@@ -33,19 +33,27 @@ jobs:
           version: '6.11.3'
           cache: true
           aqtsource: git+https://github.com/miurahr/aqtinstall.git@16db45a70b5905ad596941b223469bc86a56901e
-      - name: OpenSSL import libraries
-        id: vcpkg
-        uses: johnwason/vcpkg-action@v8
+      - uses: actions/checkout@v4
         with:
-          pkgs: openssl
-          extra-args: --classic --host-triplet=x64-windows-release
-          triplet: x64-windows-release
-          token: ${{ github.token }}
-          revision: d5ec528843d29e3a52d745a64b469f810b2cedbf
+          repository: openssl/openssl
+          ref: f93be98fe7c796e92fc999dd1a21a5212d4e4f8e
+          path: openssl-src
+      - name: Build matching OpenSSL 3.6.5 import libraries
+        shell: pwsh
+        run: |
+          $perl = 'C:/Strawberry/perl/bin/perl.exe'
+          if (!(Test-Path $perl)) { throw 'Windows native Strawberry Perl is required' }
+          Push-Location openssl-src
+          & $perl Configure VC-WIN64A no-tests no-asm
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          nmake /nologo build_libs
+          $result = $LASTEXITCODE
+          Pop-Location
+          if ($result -ne 0) { exit $result }
       - name: Configure core
         shell: pwsh
         run: |
-          cmake -S upstream -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=OFF -DBUILD_INSTALLER=OFF -DVCPKG_MANIFEST_MODE=OFF ${{ steps.vcpkg.outputs.vcpkg-cmake-config }}
+          cmake -S upstream -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=OFF -DBUILD_INSTALLER=OFF -DOPENSSL_INCLUDE_DIR="$PWD/openssl-src/include" -DOPENSSL_SSL_LIBRARY="$PWD/openssl-src/libssl.lib" -DOPENSSL_CRYPTO_LIBRARY="$PWD/openssl-src/libcrypto.lib"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build core and native wake policy tests
         shell: pwsh
