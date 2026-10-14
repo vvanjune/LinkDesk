@@ -1,0 +1,78 @@
+name: Windows display-safe core
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'source/core-patches/**'
+      - 'source/scripts/apply-core-patch.py'
+      - 'source/tests/DisplayWakePolicyTests.cpp'
+      - '.github/workflows/windows-display-core.yml'
+permissions:
+  contents: read
+jobs:
+  core:
+    runs-on: windows-2022
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: deskflow/deskflow
+          ref: 90376dfaba2c28dd61c5d4453ae5641c6edec5a3
+          path: upstream
+      - name: Apply auditable Windows patch
+        run: python source/scripts/apply-core-patch.py upstream
+      - name: Setup MSVC
+        uses: TheMrMilchmann/setup-msvc-dev@v4
+        with:
+          arch: amd64
+          spectre: true
+      - name: Install pinned Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.11.3'
+          cache: true
+          aqtsource: git+https://github.com/miurahr/aqtinstall.git@16db45a70b5905ad596941b223469bc86a56901e
+      - name: OpenSSL import libraries
+        id: vcpkg
+        uses: johnwason/vcpkg-action@v8
+        with:
+          pkgs: openssl
+          extra-args: --classic --host-triplet=x64-windows-release
+          triplet: x64-windows-release
+          token: ${{ github.token }}
+          revision: d5ec528843d29e3a52d745a64b469f810b2cedbf
+      - name: Configure core
+        shell: pwsh
+        run: |
+          cmake -S upstream -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=OFF -DBUILD_INSTALLER=OFF -DVCPKG_MANIFEST_MODE=OFF ${{ steps.vcpkg.outputs.vcpkg-cmake-config }}
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build core and native wake policy tests
+        shell: pwsh
+        run: |
+          cmake --build build --target deskflow-core --parallel 8
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cl /nologo /EHsc /std:c++20 /I upstream/src/lib source/tests/DisplayWakePolicyTests.cpp /Fe:build/display-wake-tests.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          build/display-wake-tests.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify against official Windows runtime
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://github.com/deskflow/deskflow/releases/download/v1.27.0/deskflow-1.27.0-win-x64-portable.zip -OutFile official.zip
+          if ((Get-FileHash official.zip -Algorithm SHA256).Hash.ToLower() -ne '8d19004cc3625623489d96580c1b58fd13ee78185689907fd4478595f93fab9a') { throw 'Upstream checksum mismatch' }
+          Expand-Archive official.zip official
+          $original = Get-ChildItem official -Recurse -Filter deskflow-core.exe | Select-Object -First 1
+          Copy-Item build/bin/deskflow-core.exe $original.FullName -Force
+          Push-Location $original.DirectoryName
+          ./deskflow-core.exe --version
+          $result = $LASTEXITCODE
+          Pop-Location
+          if ($result -ne 0) { throw 'Patched core failed with official Qt/OpenSSL/MSVC runtime' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linkdesk-display-safe-core-x64
+          path: |
+            build/bin/deskflow-core.exe
+            source/core-patches/windows-display-safety.patch
+          retention-days: 14

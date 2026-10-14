@@ -1,0 +1,353 @@
+--- a/src/lib/arch/win32/ArchMiscWindows.cpp
++++ b/src/lib/arch/win32/ArchMiscWindows.cpp
+@@ -264,8 +264,11 @@
+     state |= ES_CONTINUOUS;
+   }
+ 
+-  // do it
+-  s_stes(state);
++  // ES_CONTINUOUS alone clears this thread's previous requirement. Zero is
++  // not the documented way to release an execution-state request.
++  if (state == 0) state = ES_CONTINUOUS;
++  const DWORD previous = s_stes(state);
++  LOG_INFO("LinkDesk execution-state request: flags=0x%lx result=0x%lx", state, previous);
+ }
+ 
+ DWORD
+@@ -290,7 +293,8 @@
+     }
+   }
+ 
+-  s_stes(ES_DISPLAY_REQUIRED);
++  const DWORD previous = s_stes(ES_DISPLAY_REQUIRED);
++  LOG_INFO("LinkDesk explicit display wake API: flags=0x%lx result=0x%lx", DWORD(ES_DISPLAY_REQUIRED), previous);
+ 
+   // restore the original execution states
+   setThreadExecutionState(s_busyState);
+--- a/src/lib/client/Client.cpp
++++ b/src/lib/client/Client.cpp
+@@ -32,6 +32,19 @@
+ 
+ #include <QMetaEnum>
+ 
++#ifdef _WIN32
++#include "platform/MSWindowsComputer.h"
++#endif
++
++static void notifyRemoteDisplayInput(const char *reason)
++{
++#ifdef _WIN32
++  MSWindowsComputer::remoteInputReceived(reason);
++#else
++  (void)reason;
++#endif
++}
++
+ #include <cstdlib>
+ #include <cstring>
+ 
+@@ -270,41 +283,49 @@
+ 
+ void Client::keyDown(KeyID id, KeyModifierMask mask, KeyButton button, const std::string &lang)
+ {
++  notifyRemoteDisplayInput("keyDown");
+   m_computer->keyDown(id, mask, button, lang);
+ }
+ 
+ void Client::keyRepeat(KeyID id, KeyModifierMask mask, int32_t count, KeyButton button, const std::string &lang)
+ {
++  notifyRemoteDisplayInput("keyRepeat");
+   m_computer->keyRepeat(id, mask, count, button, lang);
+ }
+ 
+ void Client::keyUp(KeyID id, KeyModifierMask mask, KeyButton button)
+ {
++  notifyRemoteDisplayInput("keyUp");
+   m_computer->keyUp(id, mask, button);
+ }
+ 
+ void Client::mouseDown(ButtonID id)
+ {
++  notifyRemoteDisplayInput("mouseDown");
+   m_computer->mouseDown(id);
+ }
+ 
+ void Client::mouseUp(ButtonID id)
+ {
++  notifyRemoteDisplayInput("mouseUp");
+   m_computer->mouseUp(id);
+ }
+ 
+ void Client::mouseMove(int32_t x, int32_t y)
+ {
++  notifyRemoteDisplayInput("mouseMove");
+   m_computer->mouseMove(x, y);
+ }
+ 
+ void Client::mouseRelativeMove(int32_t dx, int32_t dy)
+ {
++  notifyRemoteDisplayInput("mouseRelativeMove");
+   m_computer->mouseRelativeMove(dx, dy);
+ }
+ 
+ void Client::mouseWheel(int32_t xDelta, int32_t yDelta)
+ {
++  notifyRemoteDisplayInput("mouseWheel");
+   m_computer->mouseWheel(xDelta, yDelta);
+ }
+ 
+--- a/src/lib/common/Settings.h
++++ b/src/lib/common/Settings.h
+@@ -53,6 +53,8 @@
+     inline static const auto LastVersion = QStringLiteral("core/lastVersion");
+     inline static const auto Port = QStringLiteral("core/port");
+     inline static const auto PreventSleep = QStringLiteral("core/preventSleep");
++    inline static const auto WindowsWakeDisplay = QStringLiteral("core/windowsWakeDisplayOnRemoteInput");
++    inline static const auto WindowsScreenSaverSync = QStringLiteral("core/windowsScreenSaverSync");
+     inline static const auto ProcessMode = QStringLiteral("core/processMode");
+     inline static const auto ComputerName = QStringLiteral("core/computerName");
+     inline static const auto Display = QStringLiteral("core/display");
+@@ -285,6 +287,8 @@
+     , Core::LastVersion
+     , Core::Port
+     , Core::PreventSleep
++    , Core::WindowsWakeDisplay
++    , Core::WindowsScreenSaverSync
+     , Core::ProcessMode
+     , Core::EnableEnterCommand
+     , Core::EnableExitCommand
+@@ -346,6 +350,8 @@
+     , Gui::ShowVersionInTitle
+     , Gui::IgnoreMissingKeyboardLayouts
+     , Core::PreventSleep
++    , Core::WindowsWakeDisplay
++    , Core::WindowsScreenSaverSync
+     , Core::EnableEnterCommand
+     , Core::EnableExitCommand
+     , Client::DynamicConnectionRetry
+--- a/src/lib/deskflow/ipc/CoreIpcServer.cpp
++++ b/src/lib/deskflow/ipc/CoreIpcServer.cpp
+@@ -29,7 +29,11 @@
+ 
+ void CoreIpcServer::processCommand(QLocalSocket *clientSocket, const QString &command, const QStringList &parts)
+ {
+-  Q_UNUSED(parts)
++  if (command == QStringLiteral("ping") && parts.size() == 2 && parts.at(1).size() <= 64) {
++    writeToClientSocket(clientSocket, QStringLiteral("pong=%1").arg(parts.at(1)));
++    clientSocket->flush();
++    return;
++  }
+   if (command == QStringLiteral("stop")) {
+     LOG_DEBUG("core ipc server got stop message");
+     writeToClientSocket(clientSocket, QStringLiteral("ok"));
+--- /dev/null
++++ b/src/lib/platform/DisplayWakePolicy.h
+@@ -0,0 +1,24 @@
++/* SPDX-License-Identifier: GPL-2.0-only WITH LicenseRef-OpenSSL-Exception
++ * LinkDesk Windows display-safety patch, 2026.
++ */
++#pragma once
++#include <cstdint>
++
++// An unknown display state is not an off state. Duplicate off notifications
++// must not re-arm a request; only a new on/dim -> off cycle can do so.
++class DisplayWakePolicy {
++public:
++  void displayState(std::uint32_t state) {
++    const bool off = state == 0;
++    if (off != m_off) m_requested = false;
++    m_off = off;
++  }
++  bool requestFromInput(bool enabled, bool primary) {
++    if (!enabled || primary || !m_off || m_requested) return false;
++    m_requested = true;
++    return true;
++  }
++private:
++  bool m_off = false;
++  bool m_requested = false;
++};
+--- a/src/lib/platform/MSWindowsComputer.cpp
++++ b/src/lib/platform/MSWindowsComputer.cpp
+@@ -79,6 +79,20 @@
+ HINSTANCE MSWindowsComputer::s_windowInstance = nullptr;
+ MSWindowsComputer *MSWindowsComputer::s_computer = nullptr;
+ 
++// GUID_CONSOLE_DISPLAY_STATE without an external GUID symbol dependency.
++static const GUID kLinkDeskDisplayState = {0x6fe69556, 0x704a, 0x47a0, {0x8f, 0x24, 0xc2, 0x8d, 0x93, 0x6f, 0xda, 0x47}};
++
++void MSWindowsComputer::remoteInputReceived(const char *reason)
++{
++  auto *computer = s_computer;
++  if (computer == nullptr) return;
++  if (computer->m_displayWake.requestFromInput(
++      Settings::value(Settings::Core::WindowsWakeDisplay).toBool(), computer->m_isPrimary)) {
++    LOG_INFO("LinkDesk display wake requested: actual remote %s input; once per off cycle", reason);
++    ArchMiscWindows::wakeupDisplay();
++  }
++}
++
+ MSWindowsComputer::MSWindowsComputer(bool isPrimary, bool useHooks, IEventQueue *events, bool enableLangSync)
+     : PlatformComputer(events),
+       m_isPrimary(isPrimary),
+@@ -113,6 +127,8 @@
+     setupMouseKeys();
+     LOG_DEBUG("computer shape: %d,%d %dx%d %s", m_x, m_y, m_w, m_h, m_multimon ? "(multi-monitor)" : "");
+     LOG_DEBUG("window is 0x%08x", m_window);
++    LOG_INFO("LinkDesk display policy: no wake on connection/enter; input wake=%s",
++        Settings::value(Settings::Core::WindowsWakeDisplay).toBool() ? "enabled" : "disabled");
+ 
+     if (Settings::value(Settings::Core::PreventSleep).toBool()) {
+       m_powerManager.disableSleep();
+@@ -249,11 +265,11 @@
+ 
+     m_primaryKeyDownList.clear();
+   } else {
+-    // Entering a secondary computer. Ensure that no screensaver is active
+-    // and that the computer is not in powersave mode.
+-    ArchMiscWindows::wakeupDisplay();
+-
+-    if (m_screensaver != nullptr && m_screensaverActive) {
++    // Enter/connection is not input and must not change display power.
++    // Optional display wake is handled only by real remote input messages.
++    LOG_DEBUG("LinkDesk skipped display wake on enter");
++
++    if (m_screensaver != nullptr && m_screensaverActive && Settings::value(Settings::Core::WindowsScreenSaverSync).toBool()) {
+       m_screensaver->deactivate();
+       m_screensaverActive = 0;
+     }
+@@ -363,8 +379,9 @@
+   m_screensaverNotify = notify;
+   if (m_screensaverNotify) {
+     m_desks->installScreensaverHooks(true);
+-  } else if (m_screensaver) {
++  } else if (m_screensaver && Settings::value(Settings::Core::WindowsScreenSaverSync).toBool()) {
+     m_screensaver->disable();
++    m_screensaverDisabled = true;
+   }
+ }
+ 
+@@ -373,8 +390,9 @@
+   if (m_screensaver != nullptr) {
+     if (m_screensaverNotify) {
+       m_desks->installScreensaverHooks(false);
+-    } else {
++    } else if (m_screensaverDisabled) {
+       m_screensaver->enable();
++      m_screensaverDisabled = false;
+     }
+   }
+   m_screensaverNotify = false;
+@@ -382,6 +400,10 @@
+ 
+ void MSWindowsComputer::screensaver(bool activate)
+ {
++  if (!m_isPrimary && !Settings::value(Settings::Core::WindowsScreenSaverSync).toBool()) {
++    LOG_INFO("LinkDesk skipped remote screensaver request: %s", activate ? "activate" : "deactivate");
++    return;
++  }
+   assert(m_screensaver != nullptr);
+   if (m_screensaver == nullptr)
+     return;
+@@ -806,11 +828,20 @@
+     LOG_ERR("failed to create window: %d", GetLastError());
+     throw DisplayOpenFailureException();
+   }
++  if (!m_isPrimary) {
++    m_displayPowerNotification = RegisterPowerSettingNotification(window, &kLinkDeskDisplayState, DEVICE_NOTIFY_WINDOW_HANDLE);
++    if (m_displayPowerNotification == nullptr)
++      LOG_WARN("LinkDesk display-state subscription failed: %lu; explicit input wake remains unarmed", GetLastError());
++  }
+   return window;
+ }
+ 
+ void MSWindowsComputer::destroyWindow(HWND hwnd) const
+ {
++  if (m_displayPowerNotification != nullptr) {
++    UnregisterPowerSettingNotification(m_displayPowerNotification);
++    m_displayPowerNotification = nullptr;
++  }
+   if (hwnd != nullptr) {
+     DestroyWindow(hwnd);
+   }
+@@ -960,6 +991,16 @@
+ 
+   case WM_POWERBROADCAST:
+     switch (wParam) {
++    case PBT_POWERSETTINGCHANGE: {
++      auto *setting = reinterpret_cast<const POWERBROADCAST_SETTING *>(lParam);
++      if (setting != nullptr && IsEqualGUID(setting->PowerSetting, kLinkDeskDisplayState) && setting->DataLength == sizeof(DWORD)) {
++        DWORD state = 0;
++        memcpy(&state, setting->Data, sizeof(state));
++        m_displayWake.displayState(state);
++        LOG_INFO("LinkDesk console display state: %lu (0=off, 1=on, 2=dim)", state);
++      }
++      break;
++    }
+     case PBT_APMRESUMEAUTOMATIC:
+     case PBT_APMRESUMECRITICAL:
+     case PBT_APMRESUMESUSPEND:
+--- a/src/lib/platform/MSWindowsComputer.h
++++ b/src/lib/platform/MSWindowsComputer.h
+@@ -10,6 +10,7 @@
+ 
+ #include "deskflow/PlatformComputer.h"
+ #include "platform/MSWindowsHook.h"
++#include "platform/DisplayWakePolicy.h"
+ #include "platform/MSWindowsPowerManager.h"
+ 
+ #include <map>
+@@ -41,6 +42,9 @@
+   WinMain with the HINSTANCE it was passed.
+   */
+   static void init(HINSTANCE);
++
++  // Called only by decoded remote keyboard/mouse protocol messages.
++  static void remoteInputReceived(const char *reason);
+ 
+   //@}
+   //! @name accessors
+@@ -296,11 +300,14 @@
+   // screen saver stuff
+   MSWindowsScreenSaver *m_screensaver = nullptr;
+   bool m_screensaverNotify = false;
++  bool m_screensaverDisabled = false;
+   bool m_screensaverActive = false;
+ 
+   // clipboard stuff.  our window is used mainly as a clipboard
+   // owner and as a link in the clipboard viewer chain.
+   HWND m_window = nullptr;
++  mutable HPOWERNOTIFY m_displayPowerNotification = nullptr;
++  DisplayWakePolicy m_displayWake;
+   DWORD m_clipboardSequenceNumber = 0;
+   bool m_ownClipboard = false;
+ 
+--- a/src/lib/platform/MSWindowsPowerManager.cpp
++++ b/src/lib/platform/MSWindowsPowerManager.cpp
+@@ -15,12 +15,17 @@
+ 
+ void MSWindowsPowerManager::disableSleep()
+ {
++  if (m_disabled) return;
++  m_disabled = true;
+   ArchMiscWindows::addBusyState(ArchMiscWindows::kSYSTEM);
+   ArchMiscWindows::addBusyState(ArchMiscWindows::kDISPLAY);
+ }
+ 
+ void MSWindowsPowerManager::enableSleep()
+ {
++  // Do not send display/system power requests on teardown unless we own one.
++  if (!m_disabled) return;
++  m_disabled = false;
+   // allow the system to enter power saving mode
+   ArchMiscWindows::removeBusyState(ArchMiscWindows::kSYSTEM);
+   ArchMiscWindows::removeBusyState(ArchMiscWindows::kDISPLAY);
+--- a/src/lib/platform/MSWindowsPowerManager.h
++++ b/src/lib/platform/MSWindowsPowerManager.h
+@@ -21,4 +21,6 @@
+    * @brief Enable automatically sleeping
+    */
+   void enableSleep();
++private:
++  bool m_disabled = false;
+ };
