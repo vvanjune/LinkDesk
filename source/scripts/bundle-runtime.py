@@ -1,4 +1,4 @@
-"""Bundle unmodified official Deskflow runtime files; never copy user TLS data."""
+"""Bundle official runtime libraries and the audited Windows core patch; never user TLS data."""
 from pathlib import Path
 import argparse, hashlib, json, shutil
 
@@ -6,6 +6,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("platform", choices=["mac", "windows"])
 parser.add_argument("upstream", type=Path)
 parser.add_argument("output", type=Path)
+parser.add_argument("--patched-windows-core", type=Path)
 args = parser.parse_args()
 root = args.upstream.resolve()
 out = args.output.resolve()
@@ -32,14 +33,30 @@ if args.platform == "mac":
     notices = resources / "ThirdParty"
     runtime = destination
 else:
+    if not args.patched_windows_core or not args.patched_windows_core.is_file():
+        raise SystemExit("Windows 0.4.3 requires the display-safe core built by windows-display-core.yml; no upstream fallback")
+    original_hash = hashlib.sha256((root / "deskflow-core.exe").read_bytes()).hexdigest() if (root / "deskflow-core.exe").exists() else ""
+    if original_hash != "8e533ece67eeebe70469abc9580b683960e260102cc3997d1b5a16a49c380951":
+        raise SystemExit("Unexpected official Deskflow 1.27.0 Windows core input")
+    patched_hash = hashlib.sha256(args.patched_windows_core.read_bytes()).hexdigest()
+    if patched_hash == original_hash:
+        raise SystemExit("Unpatched Windows core refused")
     if not (root / "deskflow-core.exe").is_file():
         raise SystemExit("Select the extracted official Deskflow Windows x64 portable folder")
     runtime = out / "core"
     if runtime.exists():
         shutil.rmtree(runtime)
     runtime.mkdir(parents=True)
-    for path in [root / "deskflow-core.exe", *root.glob("*.dll")]:
+    for path in root.glob("*.dll"):
         shutil.copy2(path, runtime / path.name)
+    shutil.copy2(args.patched_windows_core, runtime / "deskflow-core.exe")
+    patch = Path(__file__).resolve().parent.parent / "core-patches/windows-display-safety.patch"
+    (runtime / "linkdesk-core.json").write_text(json.dumps({
+        "displaySafetyVersion": 1, "sha256": patched_hash,
+        "upstreamVersion": "1.27.0", "upstreamCommit": "90376dfaba2c28dd61c5d4453ae5641c6edec5a3",
+        "patchSha256": hashlib.sha256(patch.read_bytes()).hexdigest(),
+        "officialCoreSha256": original_hash
+    }, indent=2) + "\n")
     shutil.copytree(root / "plugins", runtime / "plugins")
     # This marker selects per-profile TLS paths instead of ProgramData/Deskflow.
     # Actual settings are always passed explicitly using --settings.
@@ -54,6 +71,8 @@ else:
 if notices.exists():
     shutil.rmtree(notices)
 shutil.copytree(licenses, notices)
+if args.platform == "windows":
+    shutil.copy2(patch, notices / "windows-display-safety.patch")
 manifest = {}
 for path in sorted(runtime.rglob("*")):
     if not path.is_file() or path.is_symlink() or "ThirdParty" in path.parts:

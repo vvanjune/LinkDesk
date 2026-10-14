@@ -1,6 +1,6 @@
 # Bundled runtime notices
 
-LinkDesk 0.4.x includes the unmodified Deskflow 1.27.0 core and its required native runtime files. On macOS nested executables are locally signed as part of the LinkDesk bundle; this does not alter their source behavior.
+LinkDesk macOS 0.4.2 includes the official Deskflow 1.27.0 core. Windows 0.4.3 builds that core from pinned commit 90376dfaba2c28dd61c5d4453ae5641c6edec5a3 with source/core-patches/windows-display-safety.patch. Required Qt/OpenSSL/MSVC runtime files remain unchanged from the official distribution. On macOS nested executables are locally signed as part of the LinkDesk bundle; this does not alter their source behavior.
 
 - Deskflow 1.27.0: GPL-2.0-only with the upstream OpenSSL exception. See deskflow-1.27.0/LICENSE and LICENSE_EXCEPTION.
 - Qt Base and Qt SVG 6.11.3: see the Qt LICENSES folders and third-party copyright files. These are separate shared libraries/frameworks and may be replaced or rebuilt under their licenses. macOS replacements require re-signing the application bundle.
@@ -16,3 +16,5 @@ Original official Windows core ZIP SHA-256:
 Original runtime input hashes are recorded in runtime-files.json by the bundling script, before local macOS re-signing. Identity PEMs, private keys, personal pairing databases and settings are never copied into the runtime packages.
 
 Version 0.4.2 changes the native frontends only. The Deskflow core and upstream runtime/source inputs are unchanged from v0.4.0.
+
+Windows 0.4.3 includes the applied display-safety patch alongside these notices. Complete upstream Deskflow source is available in the linked source archive and at https://github.com/deskflow/deskflow/tree/90376dfaba2c28dd61c5d4453ae5641c6edec5a3; the patch and Windows build workflow in the LinkDesk repository provide the corresponding modifications and build instructions. The derived core remains GPL-2.0-only WITH LicenseRef-OpenSSL-Exception. Runtime manifest hashes describe the actual packaged files; core/linkdesk-core.json records patched core, patch and official input hashes. No bit-for-bit build reproducibility is claimed.
