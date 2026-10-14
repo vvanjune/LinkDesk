@@ -55,6 +55,7 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
  private PeerStore? peers;
  private string activeProfile="";
  private long discoveryGeneration;
+ private string? discoveryIdentity;
  public ObservableCollection<PairedDevice> Devices {get;private set;}=new();
  public PairedDevice? SelectedDevice=>peers?.Selected;
  public string CurrentPeerLabel=>SelectedDevice?.Label??"尚未选择设备";
@@ -143,7 +144,6 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
  public void SelectDevice(string id) {
   if(Running){MessageBox.Show("请先停止共享，再切换设备。","LinkDesk");return;}
   var peer=peers?.Devices.FirstOrDefault(d=>d.Id==id);if(peer is null)return;
-  if(peer.Role==(Server?"server":"client")){MessageBox.Show("两端用途相同。请把一端设为共享键鼠、另一端设为接收键鼠。","LinkDesk");return;}
   if(!peer.Paired&&MessageBox.Show($"核对 {peer.Label} 的本机指纹：\n\n{peer.FormattedFingerprint}\n\n只有与对方连接页显示的完整指纹一致时才允许配对。", "确认设备身份",MessageBoxButton.YesNo,MessageBoxImage.Question)!=MessageBoxResult.Yes)return;
   try{Stop();peers!.SetInput(CurrentInput());if(peer.Paired)peers.Select(id);else peers.Pair(id);ApplySelected(true);Save();RefreshDevices();Status="已选择 "+CurrentPeerLabel;Detail="点击启动共享；另一端也需选择本机并确认配对。";}catch(Exception e){MessageBox.Show(e.Message,"LinkDesk");}
  }
@@ -156,6 +156,9 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
  public void ForgetDevice(string id){if(Running){MessageBox.Show("请先停止共享，再忘记设备。","LinkDesk");return;}try{if(SelectedDevice?.Id==id)Stop();peers?.Forget(id);RefreshDevices();Status="配对已移除";Detail="再次连接需要重新核对指纹。";}catch(Exception e){MessageBox.Show(e.Message,"LinkDesk");}}
  public void RefreshDiscovery()=>discovery?.Refresh();
  public void ConfigureDiscovery() {
+  var signature=LocalName+":"+Server+":"+LocalFingerprint+":"+AutoDiscover;
+  if(!disposed&&discoveryIdentity==signature&&discovery is not null)return;
+  discoveryIdentity=signature;
   var revision=++discoveryGeneration;discovery?.Dispose();discovery=null;announcement?.Dispose();announcement=null;
   if(disposed||!AutoDiscover){DiscoveryStatus="发现已关闭，可手动添加设备。";return;}
   var pin=PeerStore.Pin(LocalFingerprint);if(pin is null||!Name(LocalName)){DiscoveryStatus="请先准备本机身份和名称。";return;}
@@ -167,7 +170,6 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
      var oldName=SelectedDevice?.Name;var oldAddress=SelectedDevice?.Address;
      bool selected=peers.Observe(incoming);RefreshDevices();
      if(selected){bool returned=(DateTime.UtcNow-lastDiscoverySeen).TotalSeconds>12;lastDiscoverySeen=DateTime.UtcNow;ApplySelected(false);Save();
-      if(SelectedDevice!.Role!=(Server?"client":"server")){if(Running)Stop();Detail="对方用途已改变，请设置两端为共享与接收。";return;}
       if(oldName!=incoming.Name||oldAddress!=incoming.Address||returned)RequestRecovery("已核对所选设备的身份",oldName!=incoming.Name||(!Server&&oldAddress!=incoming.Address));
      }
     }catch(Exception e){Log("设备列表："+e.Message);}
@@ -196,7 +198,7 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
    if(!disposed&&AutoConnect&&generation==id){WriteConfiguration();Launch();}
   }catch(Exception e){restarting=false;try{Running=child is not null&&!child.HasExited;}catch{Running=false;}Status="恢复暂未完成";Detail=e.Message;}
  }
- public void Save() { try {peers?.SetInput(CurrentInput());Directory.CreateDirectory(folder);File.WriteAllText(Path.Combine(folder,"preferences.json"),JsonSerializer.Serialize(preferences,new JsonSerializerOptions{WriteIndented=true}));}catch(Exception e){MessageBox.Show("保存失败："+e.Message,"LinkDesk");} }
+ public void Save() { try {peers?.SetInput(CurrentInput());Directory.CreateDirectory(folder);File.WriteAllText(Path.Combine(folder,"preferences.json"),JsonSerializer.Serialize(preferences,new JsonSerializerOptions{WriteIndented=true}));ConfigureDiscovery();}catch(Exception e){MessageBox.Show("保存失败："+e.Message,"LinkDesk");} }
  private void Log(string line) {Logs.Add(line);while(Logs.Count>300)Logs.RemoveAt(0);}
  private static bool Name(string s)=>Regex.IsMatch(s,@"^[A-Za-z0-9][A-Za-z0-9_.-]{0,254}$");
  public void Start() {

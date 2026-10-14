@@ -133,9 +133,10 @@ final class PeerStore {
         let connection = profile.appendingPathComponent("connections/\(id)")
         if FileManager.default.fileExists(atPath: connection.path) { try FileManager.default.removeItem(at: connection) }
     }
+    // Advertised roles may be stale during switching; trust is bound only to the selected paired fingerprint.
     func session(server: Bool) throws -> URL {
-        guard let peer = selected, peer.role == (server ? "client" : "server") else {
-            throw NSError(domain: "LinkDesk.Peers", code: 2, userInfo: [NSLocalizedDescriptionKey: "请在配对设备中选择另一台电脑，并将两端分别设为共享键鼠和接收键鼠。"])
+        guard let peer = selected else {
+            throw NSError(domain: "LinkDesk.Peers", code: 2, userInfo: [NSLocalizedDescriptionKey: "请在配对设备中选择并确认另一台电脑。"])
         }
         return try Self.prepareSession(profile: profile, fingerprint: peer.fingerprint)
     }

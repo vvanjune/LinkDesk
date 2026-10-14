@@ -18,8 +18,8 @@ cat > "$LINKDESK_APP/Contents/Info.plist" <<'PLIST'
 <key>CFBundleDisplayName</key><string>LinkDesk</string>
 <key>CFBundleIdentifier</key><string>local.linkdesk.native</string>
 <key>CFBundleExecutable</key><string>LinkDesk</string>
-<key>CFBundleShortVersionString</key><string>0.4.0</string>
-<key>CFBundleVersion</key><string>4</string>
+<key>CFBundleShortVersionString</key><string>0.4.2</string>
+<key>CFBundleVersion</key><string>6</string>
 <key>CFBundleIconFile</key><string>LinkDesk.icns</string>
 <key>LSMinimumSystemVersion</key><string>13.0</string>
 <key>NSHighResolutionCapable</key><true/>

@@ -1,10 +1,10 @@
 # LinkDesk
 
-一套键鼠，连接 Mac 与 Windows。当前版本 **Mac 0.4.0 / Windows 0.4.1 独立版**，Mac 使用 SwiftUI，Windows 使用 WPF。两端内置 Deskflow 1.27.0 连接核心与必要运行库，无需另装 Deskflow；Windows 无需另装 .NET。
+一套键鼠，连接 Mac 与 Windows。当前版本 **0.4.2 双端独立版**，Mac 使用 SwiftUI，Windows 使用 WPF。两端内置 Deskflow 1.27.0 连接核心与必要运行库，无需另装 Deskflow；Windows 无需另装 .NET。
 
 ## 下载与连接
 
-Mac 安装包与完整上游资料见 [v0.4.0 发布页](https://github.com/vvanjune/LinkDesk/releases/tag/v0.4.0)，Windows 修复版与新版源码见 [v0.4.1 发布页](https://github.com/vvanjune/LinkDesk/releases/tag/v0.4.1)。这是测试发布，Mac 使用本地签名、尚未公证，Windows 尚未进行发布签名。支持 Apple Silicon Mac 与 Windows x64。
+Mac、Windows 完整包及新版源码见 [v0.4.2 发布页](https://github.com/vvanjune/LinkDesk/releases/tag/v0.4.2)。未改动的上游源码资料继续使用 [v0.4.0 发布页](https://github.com/vvanjune/LinkDesk/releases/tag/v0.4.0)。这是测试发布，Mac 使用本地签名、尚未公证，Windows 尚未进行发布签名。支持 Apple Silicon Mac 与 Windows x64。
 
 1. Mac 将完整 LinkDesk.app 放入应用程序，允许设备控制；Windows 完整解压后运行 LinkDesk.exe，保留 core 和 ThirdParty 文件夹。
 2. 两台电脑连接可互通的局域网，一端选择共享键鼠、另一端选择接收。
@@ -22,9 +22,11 @@ Mac 安装包与完整上游资料见 [v0.4.0 发布页](https://github.com/vvan
 
 这不是同时连接多台的屏幕网格。发现限于同一 IPv4 局域网；广播被阻挡时可以手动添加，网络仍须互通。未提供公网穿透或 USB 鼠标模拟。
 
-## Windows 0.4.1 修复
+## 0.4.2 用途切换修复
 
-切换用途或修改本机名称后直接点击启动，会同步刷新签名设备公告，避免核心已经使用新用途、另一端仍看到旧用途。Mac 保持 0.4.0，协议、身份和配对格式不变。
+切换用途后，旧设备公告曾让两端被错误判定为用途相同，导致不能启动或连接被停止。现在保存和启动都会刷新公告；缓存用途用于显示，不再阻断所选身份的连接。完整指纹校验与所选设备的独立 TLS 信任范围不变。
+
+Swift、C# 回归检查通过，双端构建与 Mac 签名检查通过。0.4.2 更新后的实机验证另行记录。Windows 黑屏及 Mac 接收端光标暂时不可见仍未确认根因，本轮没有修改电源或光标行为；见 [排查记录](排查记录.md)。
 
 ## 日常使用
 

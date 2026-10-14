@@ -109,9 +109,10 @@ public sealed class PeerStore {
  public void Rename(string id,string alias){var d=database.Devices.FirstOrDefault(d=>d.Id==id&&d.Paired);if(d is null)return;d.Alias=alias.Trim()[..Math.Min(80,alias.Trim().Length)];Save();}
  public void SetInput(PeerInput input){if(Selected is null)return;Selected.Input=input;Save();}
  public void Forget(string id){if(Pin(id)!=id)return;database.Devices.RemoveAll(d=>d.Id==id);if(database.SelectedID==id)database.SelectedID=null;Save();var folder=Path.Combine(profile,"connections",id);if(Directory.Exists(folder))Directory.Delete(folder,true);}
+ // Advertised roles may be stale during switching; trust remains bound to the selected paired fingerprint.
  public string Session(bool server) {
   var selected=Selected;
-  if(selected is null||selected.Role!=(server?"client":"server"))throw new InvalidOperationException("请在配对设备中选择另一台电脑，并将两端分别设为共享键鼠和接收键鼠。");
+  if(selected is null)throw new InvalidOperationException("请在配对设备中选择并确认另一台电脑。");
   return PrepareSession(profile,selected.Fingerprint);
  }
  public static string PrepareSession(string profile,string fingerprint) {

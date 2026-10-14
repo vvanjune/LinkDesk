@@ -1,1 +1,2 @@
 source/third-party/** -whitespace
+*.cmd text eol=crlf

@@ -32,8 +32,10 @@ class MultiPeerTests {
     foreach(var db in new[]{"trusted-clients","trusted-servers"})Check(File.ReadAllText(Path.Combine(scope,"tls",db))=="v2:sha256:"+pinA+"\n","TLS scope contains other trusted identity");
    }
    Check(File.ReadAllText(Path.Combine(own,"tls","trusted-servers"))==old,"historical trust overwritten");
-   store.Observe(Device(pinA,"192.0.2.11","client"));bool refused=false;try{store.Session(false);}catch(InvalidOperationException){refused=true;}Check(refused,"same roles permitted");
+   foreach(var role in new[]{"server","client"}){store.Observe(Device(pinA,"192.0.2.11",role));foreach(bool localServer in new[]{false,true})foreach(var name in new[]{"trusted-clients","trusted-servers"})Check(File.ReadAllText(Path.Combine(store.Session(localServer),"tls",name))=="v2:sha256:"+pinA+"\n","stale role blocked selected identity or broadened trust");}
+   bool refused=false;
    store.Forget(pinA);Check(store.Selected is null&&!Directory.Exists(Path.Combine(own,"connections",pinA)),"forget did not revoke selection and TLS scope");
+   try{store.Session(true);}catch(InvalidOperationException){refused=true;}Check(refused,"unselected identity allowed to connect");
    Check(new PeerStore(own).Selected is null,"forget selected another device on reload");
    File.Delete(Path.Combine(own,"devices.json"));var reset=new PeerStore(own);reset.Migrate("Same-Name","192.0.2.10",false,new PeerInput());Check(!reset.Devices.Any()&&reset.Selected is null,"forgotten legacy trust resurrected after catalog loss");
    File.WriteAllText(Path.Combine(own,"devices.json"),"invalid catalog");refused=false;try{_=new PeerStore(own);}catch(JsonException){refused=true;}Check(refused&&File.ReadAllText(Path.Combine(own,"devices.json"))=="invalid catalog","corrupt catalog silently replaced");

@@ -236,7 +236,6 @@ final class LinkModel: ObservableObject {
     func chooseDevice(_ id: String) {
         guard !running else { issue = "请先停止共享，再切换设备。"; return }
         guard let peer = devices.first(where: { $0.id == id }) else { return }
-        guard peer.role == (server ? "client" : "server") else { issue = "两端用途相同。请把一端设为共享键鼠、另一端设为接收键鼠。"; return }
         if !peer.paired { pendingPairID = id; pairing = peer.formattedFingerprint; return }
         do { stop(); try peers?.setInput(inputSettings); try peers?.select(id); applySelected(restoreInput: true); refreshDevices(); save(); title = "已选择 \(selectedLabel)"; detail = "点击启动共享；另一端也需选择本机并确认配对。" } catch { issue = error.localizedDescription }
     }
@@ -263,21 +262,24 @@ final class LinkModel: ObservableObject {
         else { append("设备公告启动失败；可使用手动添加。") }
         browser = DiscoveryClient(ownPin: pin, lastAddress: { [weak self] in self?.host ?? "" }, found: { [weak self] incoming in
             DispatchQueue.main.async {
-                guard let self = self, !self.closing, self.discoveryGeneration == token, let peers = self.peers else { return }
-                do {
-                    let old = self.selectedDevice
-                    let selected = try peers.observe(incoming); self.refreshDevices()
-                    if selected {
-                        let returned = Date().timeIntervalSince(self.lastSelectedSeen) > 12; self.lastSelectedSeen = Date()
-                        self.applySelected(restoreInput: false); self.save()
-                        if incoming.role != (self.server ? "client" : "server") {
-                            if self.running { self.stop() }; self.detail = "对方用途已改变，请设置两端为共享与接收。"; return
-                        }
-                        if old?.address != incoming.address || old?.name != incoming.name || returned { self.scheduleRecovery("已核对所选设备的身份", force: old?.name != incoming.name || (!self.server && old?.address != incoming.address)) }
-                    }
-                } catch { self.append("设备列表：" + error.localizedDescription) }
+                guard let self = self, !self.closing, self.discoveryGeneration == token else { return }
+                self.observeDevice(incoming)
             }
         }, status: { [weak self] message in DispatchQueue.main.async { guard let self = self, self.discoveryGeneration == token, !self.closing else { return }; self.discoveryStatus = message; self.refreshDevices() } })
+    }
+    func observeDevice(_ incoming: PairedDevice) {
+        guard !closing, let peers = peers else { return }
+        do {
+            let old = selectedDevice
+            let selected = try peers.observe(incoming); refreshDevices()
+            if selected {
+                let returned = Date().timeIntervalSince(lastSelectedSeen) > 12; lastSelectedSeen = Date()
+                applySelected(restoreInput: false); save()
+                if old?.address != incoming.address || old?.name != incoming.name || returned {
+                    scheduleRecovery("已核对所选设备的身份", force: old?.name != incoming.name || (!server && old?.address != incoming.address))
+                }
+            }
+        } catch { append("设备列表：" + error.localizedDescription) }
     }
     private func stopDiscovery() {
         discoveryGeneration = UUID(); discoveryIdentity = nil
@@ -541,7 +543,7 @@ struct RootView: View {
                 }.padding(.top, 16)
                 Spacer()
                 Label("基于 Deskflow 1.27", systemImage: "lock.shield").font(.caption).foregroundStyle(.secondary)
-                Text("LinkDesk · 0.4.0").font(.caption2).foregroundStyle(.tertiary)
+                Text("LinkDesk · 0.4.2").font(.caption2).foregroundStyle(.tertiary)
             }.padding(24).frame(width: 210).frame(maxHeight: .infinity).background(.white.opacity(0.72))
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {

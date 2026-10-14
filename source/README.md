@@ -1,6 +1,4 @@
-# LinkDesk 0.4.x
-
-macOS 0.4.0; Windows 0.4.1. The Windows patch refreshes its signed discovery announcement when starting after an unsaved role/name change.
+# LinkDesk 0.4.2
 
 GPL-2.0-only. Native SwiftUI/AppKit on macOS 13+ Apple Silicon; WPF on Windows x64 with self-contained .NET 10. Packages embed the unmodified Deskflow 1.27.0 core and required runtime files. Users do not install Deskflow or .NET separately.
 
@@ -23,6 +21,8 @@ Each connection uses connections/<selected SHA256>/ as its core profile. Its TLS
 Protocol v2 signs the fresh random query nonce, name, source IPv4 address, port, platform and role using the advertised certificate key (RSA SHA-256 PKCS#1 or ECDSA SHA-256 DER). Both implementations validate signature, nonce, source address, field formats and protocol version before displaying a candidate. Only the explicitly selected paired identity can update the current connection address. Broadcast and remembered-address probes are bounded and rate-limited. The Mac responder also answers legacy v1 server queries for migration; both endpoints should upgrade to 0.4.0 for symmetric discovery.
 
 macOS watches NWPathMonitor and wake notifications; Windows watches NetworkAddressChanged and PowerModeChanged. Debounced recovery respects manual stop and auto-connect intent, retains healthy connections and bounds failed launches. Desktop process mode is used; only owned child processes are terminated. The Windows portable marker keeps core TLS state in the selected LinkDesk profile rather than ProgramData/Deskflow.
+
+Role advertisements can lag behind a mode change. They are device-list metadata: they never block a selected paired identity from starting or stop an established TLS connection. The core uses the explicitly configured local mode; its actual connection determines compatibility. Saving or starting refreshes the local announcement, without restarting unchanged discovery on each observed packet. Fingerprint validation and selected-only TLS scopes remain mandatory.
 
 ## Input
 

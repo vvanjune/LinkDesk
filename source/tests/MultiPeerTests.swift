@@ -30,8 +30,13 @@ import Foundation
   } } }
   check(try String(contentsOf:own.appendingPathComponent("tls/trusted-servers"),encoding:.utf8)==old,"old trust overwritten")
   _=try store.observe(device(a,"192.0.2.11","client"))
-  do { _=try store.session(server:false);fatalError("same-role session permitted") } catch {}
+  for role in ["server","client"] { _=try store.observe(device(a,"192.0.2.11",role))
+   for localServer in [false,true] { let folder=try store.session(server:localServer)
+    for name in ["trusted-clients","trusted-servers"] { check(try String(contentsOf:folder.appendingPathComponent("tls/\(name)"),encoding:.utf8)=="v2:sha256:\(a)\n","stale role blocked selected identity or broadened trust") }
+   }
+  }
   try store.forget(a);check(store.selected==nil && !fm.fileExists(atPath:own.appendingPathComponent("connections/\(a)").path),"forget did not revoke TLS scope")
+  do { _=try store.session(server:true);fatalError("unselected identity allowed to connect") } catch {}
   try fm.removeItem(at:own.appendingPathComponent("devices.json"));let reset=try PeerStore(profile:own);try reset.migrate(name:"Same-Name",address:"192.0.2.10",server:false,input:LinkInputSettings());check(reset.devices.isEmpty && reset.selected==nil,"revoked legacy trust resurrected")
   try "invalid catalog".write(to:own.appendingPathComponent("devices.json"),atomically:true,encoding:.utf8)
   do { _=try PeerStore(profile:own);fatalError("invalid book silently replaced") } catch {}
