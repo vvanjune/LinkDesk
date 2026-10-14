@@ -1,8 +1,8 @@
 """Apply LinkDesk's auditable Windows display patch to pinned Deskflow 1.27.0."""
 from pathlib import Path
 import argparse, re, subprocess, tempfile
-p=argparse.ArgumentParser();p.add_argument('source',type=Path);args=p.parse_args()
-patch=Path(__file__).resolve().parent.parent/'core-patches/windows-display-safety.patch'
+p=argparse.ArgumentParser();p.add_argument('source',type=Path);p.add_argument('--platform',choices=['windows','mac'],default='windows');args=p.parse_args()
+patch=Path(__file__).resolve().parent.parent/'core-patches'/f'{args.platform}-display-safety.patch'
 source=args.source.resolve()
 # Windows Git checkouts can use CRLF. Normalize only the exact patched files,
 # then retain git apply's strict context checks rather than relaxing the patch.
@@ -25,4 +25,4 @@ except Exception:
     for target, data in originals.items():
         target.write_bytes(data)
     raise
-print('Applied Windows display-safety patch; upstream source and patch remain separately auditable.')
+print(f'Applied {args.platform} display-safety patch; upstream source and patch remain separately auditable.')

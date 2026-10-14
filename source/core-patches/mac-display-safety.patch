@@ -1,0 +1,280 @@
+--- a/src/lib/client/Client.cpp
++++ b/src/lib/client/Client.cpp
+@@ -32,6 +32,17 @@
+ 
+ #include <QMetaEnum>
+ 
++#ifdef __APPLE__
++#include "platform/OSXComputer.h"
++#endif
++static void notifyRemoteDisplayInput(const char *reason) {
++#ifdef __APPLE__
++  OSXComputer::remoteInputReceived(reason);
++#else
++  (void)reason;
++#endif
++}
++
+ #include <cstdlib>
+ #include <cstring>
+ 
+@@ -270,41 +281,49 @@
+ 
+ void Client::keyDown(KeyID id, KeyModifierMask mask, KeyButton button, const std::string &lang)
+ {
++  notifyRemoteDisplayInput("keyDown");
+   m_computer->keyDown(id, mask, button, lang);
+ }
+ 
+ void Client::keyRepeat(KeyID id, KeyModifierMask mask, int32_t count, KeyButton button, const std::string &lang)
+ {
++  notifyRemoteDisplayInput("keyRepeat");
+   m_computer->keyRepeat(id, mask, count, button, lang);
+ }
+ 
+ void Client::keyUp(KeyID id, KeyModifierMask mask, KeyButton button)
+ {
++  notifyRemoteDisplayInput("keyUp");
+   m_computer->keyUp(id, mask, button);
+ }
+ 
+ void Client::mouseDown(ButtonID id)
+ {
++  notifyRemoteDisplayInput("mouseDown");
+   m_computer->mouseDown(id);
+ }
+ 
+ void Client::mouseUp(ButtonID id)
+ {
++  notifyRemoteDisplayInput("mouseUp");
+   m_computer->mouseUp(id);
+ }
+ 
+ void Client::mouseMove(int32_t x, int32_t y)
+ {
++  notifyRemoteDisplayInput("mouseMove");
+   m_computer->mouseMove(x, y);
+ }
+ 
+ void Client::mouseRelativeMove(int32_t dx, int32_t dy)
+ {
++  notifyRemoteDisplayInput("mouseRelativeMove");
+   m_computer->mouseRelativeMove(dx, dy);
+ }
+ 
+ void Client::mouseWheel(int32_t xDelta, int32_t yDelta)
+ {
++  notifyRemoteDisplayInput("mouseWheel");
+   m_computer->mouseWheel(xDelta, yDelta);
+ }
+ 
+--- a/src/lib/common/Settings.h
++++ b/src/lib/common/Settings.h
+@@ -53,6 +53,8 @@
+     inline static const auto LastVersion = QStringLiteral("core/lastVersion");
+     inline static const auto Port = QStringLiteral("core/port");
+     inline static const auto PreventSleep = QStringLiteral("core/preventSleep");
++    inline static const auto MacWakeDisplay = QStringLiteral("core/macWakeDisplayOnRemoteInput");
++    inline static const auto MacScreenSaverSync = QStringLiteral("core/macScreenSaverSync");
+     inline static const auto ProcessMode = QStringLiteral("core/processMode");
+     inline static const auto ComputerName = QStringLiteral("core/computerName");
+     inline static const auto Display = QStringLiteral("core/display");
+@@ -285,6 +287,8 @@
+     , Core::LastVersion
+     , Core::Port
+     , Core::PreventSleep
++    , Core::MacWakeDisplay
++    , Core::MacScreenSaverSync
+     , Core::ProcessMode
+     , Core::EnableEnterCommand
+     , Core::EnableExitCommand
+@@ -346,6 +350,8 @@
+     , Gui::ShowVersionInTitle
+     , Gui::IgnoreMissingKeyboardLayouts
+     , Core::PreventSleep
++    , Core::MacWakeDisplay
++    , Core::MacScreenSaverSync
+     , Core::EnableEnterCommand
+     , Core::EnableExitCommand
+     , Client::DynamicConnectionRetry
+--- a/src/lib/deskflow/ipc/CoreIpcServer.cpp
++++ b/src/lib/deskflow/ipc/CoreIpcServer.cpp
+@@ -29,7 +29,11 @@
+ 
+ void CoreIpcServer::processCommand(QLocalSocket *clientSocket, const QString &command, const QStringList &parts)
+ {
+-  Q_UNUSED(parts)
++  if (command == QStringLiteral("ping") && parts.size() == 2 && parts.at(1).size() <= 64) {
++    writeToClientSocket(clientSocket, QStringLiteral("pong=%1").arg(parts.at(1)));
++    clientSocket->flush();
++    return;
++  }
+   if (command == QStringLiteral("stop")) {
+     LOG_DEBUG("core ipc server got stop message");
+     writeToClientSocket(clientSocket, QStringLiteral("ok"));
+--- /dev/null
++++ b/src/lib/platform/DisplayWakePolicy.h
+@@ -0,0 +1,24 @@
++/* SPDX-License-Identifier: GPL-2.0-only WITH LicenseRef-OpenSSL-Exception
++ * LinkDesk Windows display-safety patch, 2026.
++ */
++#pragma once
++#include <cstdint>
++
++// An unknown display state is not an off state. Duplicate off notifications
++// must not re-arm a request; only a new on/dim -> off cycle can do so.
++class DisplayWakePolicy {
++public:
++  void displayState(std::uint32_t state) {
++    const bool off = state == 0;
++    if (off != m_off) m_requested = false;
++    m_off = off;
++  }
++  bool requestFromInput(bool enabled, bool primary) {
++    if (!enabled || primary || !m_off || m_requested) return false;
++    m_requested = true;
++    return true;
++  }
++private:
++  bool m_off = false;
++  bool m_requested = false;
++};
+--- a/src/lib/platform/OSXComputer.h
++++ b/src/lib/platform/OSXComputer.h
+@@ -38,6 +38,7 @@
+ class Thread;
+ class OSXKeyState;
+ class OSXScreenSaver;
++struct MacDisplayWakeState;
+ class IEventQueue;
+ class Mutex;
+ 
+@@ -48,6 +49,7 @@
+   OSXComputer(IEventQueue *events, bool isPrimary, bool enableLangSync = false);
+ 
+   virtual ~OSXComputer();
++  static void remoteInputReceived(const char *reason);
+ 
+   IEventQueue *getEvents() const
+   {
+@@ -286,6 +288,10 @@
+   CFRunLoopRef m_pmRunloop;
+   io_connect_t m_pmRootPort;
+   IOPMAssertionID m_userActivityAssertionID = kIOPMNullAssertionID;
++  std::shared_ptr<MacDisplayWakeState> m_displayWake;
++  void *m_displaySleepObserver = nullptr;
++  void *m_displayWakeObserver = nullptr;
++  bool m_screensaverDisabled = false;
+ 
+   // hot key stuff
+   HotKeyMap m_hotKeys;
+--- a/src/lib/platform/OSXComputer.mm
++++ b/src/lib/platform/OSXComputer.mm
+@@ -34,6 +34,9 @@
+ #include "platform/OSXScreenSaver.h"
+ 
+ #include <AppKit/NSEvent.h>
++#include <AppKit/NSWorkspace.h>
++#include "platform/DisplayWakePolicy.h"
++#include <mutex>
+ #include <AvailabilityMacros.h>
+ #include <IOKit/hidsystem/event_status_driver.h>
+ #include <dispatch/dispatch.h>
+@@ -82,6 +85,18 @@
+ 
+ bool OSXComputer::s_testedForGHOM = false;
+ bool OSXComputer::s_hasGHOM = false;
++struct MacDisplayWakeState { std::mutex mutex; DisplayWakePolicy policy; };
++static OSXComputer *s_linkDeskComputer = nullptr;
++void OSXComputer::remoteInputReceived(const char *reason) {
++  auto *computer = s_linkDeskComputer;
++  if (computer == nullptr || computer->m_isPrimary || !Settings::value(Settings::Core::MacWakeDisplay).toBool()) return;
++  bool request = false;
++  { std::lock_guard<std::mutex> lock(computer->m_displayWake->mutex);
++    request = computer->m_displayWake->policy.requestFromInput(true, false); }
++  if (!request) return;
++  const auto result = IOPMAssertionDeclareUserActivity(CFSTR("LinkDesk actual remote input"), kIOPMUserActiveLocal, &computer->m_userActivityAssertionID);
++  LOG_INFO("LinkDesk explicit display wake: remote %s; once per observed off cycle; result=%d", reason, result);
++}
+ 
+ OSXComputer::OSXComputer(IEventQueue *events, bool isPrimary, bool enableLangSync)
+     : PlatformComputer(events),
+@@ -182,10 +197,34 @@
+ 
+   // install the platform event queue
+   m_events->adoptBuffer(new OSXEventQueueBuffer(m_events));
++  m_displayWake = std::make_shared<MacDisplayWakeState>();
++  if (!m_isPrimary) {
++    auto state = m_displayWake; // Notifications retain state, never a raw computer pointer.
++    auto center = NSWorkspace.sharedWorkspace.notificationCenter;
++    m_displaySleepObserver = (void *)[[center addObserverForName:NSWorkspaceScreensDidSleepNotification object:nil queue:nil usingBlock:^(NSNotification *) {
++      std::lock_guard<std::mutex> lock(state->mutex); state->policy.displayState(0);
++      LOG_INFO("LinkDesk display state: off");
++    }] retain];
++    m_displayWakeObserver = (void *)[[center addObserverForName:NSWorkspaceScreensDidWakeNotification object:nil queue:nil usingBlock:^(NSNotification *) {
++      std::lock_guard<std::mutex> lock(state->mutex); state->policy.displayState(1);
++      LOG_INFO("LinkDesk display state: on");
++    }] retain];
++    // No known-off notification means no explicit wake is armed.
++  }
++  s_linkDeskComputer = this;
++  LOG_INFO("LinkDesk display policy: no wake on connection/enter; input wake=%s", Settings::value(Settings::Core::MacWakeDisplay).toBool() ? "enabled" : "disabled");
+ }
+ 
+ OSXComputer::~OSXComputer()
+ {
++  s_linkDeskComputer = nullptr;
++  auto center = NSWorkspace.sharedWorkspace.notificationCenter;
++  for (auto token : {m_displaySleepObserver, m_displayWakeObserver}) {
++    if (token != nullptr) { [center removeObserver:(id)token]; [(id)token release]; }
++  }
++  if (m_userActivityAssertionID != kIOPMNullAssertionID) {
++    IOPMAssertionRelease(m_userActivityAssertionID); m_userActivityAssertionID = kIOPMNullAssertionID;
++  }
+   disable();
+ 
+   m_events->adoptBuffer(nullptr);
+@@ -802,12 +841,8 @@
+     // reset buttons
+     m_buttonState.reset();
+ 
+-    const auto result = IOPMAssertionDeclareUserActivity(
+-        CFSTR("Deskflow client entry"), kIOPMUserActiveLocal, &m_userActivityAssertionID
+-    );
+-    if (result != kIOReturnSuccess) {
+-      LOG_WARN("failed to declare user activity: %d", result);
+-    }
++    // Connection/entry is not real input and must not request display wake.
++    LOG_DEBUG("LinkDesk skipped display wake on enter");
+ 
+     avoidSupression();
+   }
+@@ -857,20 +892,26 @@
+ void OSXComputer::openScreensaver(bool notify)
+ {
+   m_screensaverNotify = notify;
+-  if (!m_screensaverNotify) {
++  if (!m_screensaverNotify && Settings::value(Settings::Core::MacScreenSaverSync).toBool()) {
+     m_screensaver->disable();
++    m_screensaverDisabled = true;
+   }
+ }
+ 
+ void OSXComputer::closeScreensaver()
+ {
+-  if (!m_screensaverNotify) {
++  if (m_screensaverDisabled) {
+     m_screensaver->enable();
++    m_screensaverDisabled = false;
+   }
+ }
+ 
+ void OSXComputer::screensaver(bool activate)
+ {
++  if (!m_isPrimary && !Settings::value(Settings::Core::MacScreenSaverSync).toBool()) {
++    LOG_INFO("LinkDesk skipped remote screensaver request: %s", activate ? "activate" : "deactivate");
++    return;
++  }
+   if (activate) {
+     m_screensaver->activate();
+   } else {
