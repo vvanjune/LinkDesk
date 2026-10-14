@@ -56,7 +56,7 @@ jobs:
           Copy-Item source/core-patches/windows-display-safety.patch package/ThirdParty/windows-display-safety.patch
           $manifest = Get-Content package/core/linkdesk-core.json -Raw | ConvertFrom-Json
           if ($manifest.sha256 -ne (Get-FileHash package/core/deskflow-core.exe -Algorithm SHA256).Hash.ToLower()) { throw 'Core integrity mismatch' }
-          $inputs=@{coreRun='${{ inputs.core_run }}';frontendRun='${{ inputs.frontend_run }}';sourceCommit=$env:GITHUB_SHA;version='0.4.3'}
+          $inputs=@{coreRun='${{ inputs.core_run }}';frontendRun='${{ inputs.frontend_run }}';sourceCommit=$env:GITHUB_SHA;version=(Get-Content source/VERSION -Raw).Trim()}
           $inputs | ConvertTo-Json | Set-Content package/build-inputs.json
           Push-Location package/core
           ./deskflow-core.exe --version
@@ -65,12 +65,14 @@ jobs:
           if ($result -ne 0) { throw 'Packaged core failed runtime validation' }
           $forbidden=Get-ChildItem package -Recurse -File | Where-Object {$_.Extension -in '.pem','.key','.p12','.pfx','.log','.pdb' -or $_.Name -in 'preferences.json','devices.json'}
           if ($forbidden) { throw 'Private state or debugging files in package' }
-          Compress-Archive package/* LinkDesk-Windows-0.4.3.zip
-          (Get-FileHash LinkDesk-Windows-0.4.3.zip -Algorithm SHA256).Hash.ToLower()+'  LinkDesk-Windows-0.4.3.zip' | Set-Content SHA256SUMS.txt
+          $version=(Get-Content source/VERSION -Raw).Trim()
+          if ($version -ne '0.4.4') { throw 'Unexpected shared version' }
+          Compress-Archive package/* LinkDesk-Windows-0.4.4.zip
+          (Get-FileHash LinkDesk-Windows-0.4.4.zip -Algorithm SHA256).Hash.ToLower()+'  LinkDesk-Windows-0.4.4.zip' | Set-Content SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: LinkDesk-Windows-0.4.3
+          name: LinkDesk-Windows-0.4.4
           path: |
-            LinkDesk-Windows-0.4.3.zip
+            LinkDesk-Windows-0.4.4.zip
             SHA256SUMS.txt
           retention-days: 14

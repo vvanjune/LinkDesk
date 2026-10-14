@@ -29,7 +29,7 @@ enum LinkConfiguration {
         // IPv4, DNS and bracketed IPv6 only; never permit INI sections or line injection.
         !value.isEmpty && value.count <= 255 && value.range(of: "^[A-Za-z0-9_.:\\[\\]-]+$", options: .regularExpression) != nil
     }
-    static func settings(local: String, peer: String, server: Bool, host: String, layout: String, configPath: String, input: LinkInputSettings = LinkInputSettings()) throws -> String {
+    static func settings(local: String, peer: String, server: Bool, host: String, layout: String, configPath: String, input: LinkInputSettings = LinkInputSettings(), wakeDisplay: Bool = false, logPath: String? = nil) throws -> String {
         guard validName(local), validName(peer), local != peer else { throw NSError(domain: "LinkDesk", code: 1, userInfo: [NSLocalizedDescriptionKey: "电脑名称只能包含英文字母、数字、点、短横线和下划线，而且两台不能重名。"] ) }
         guard server || validHost(host) else { throw NSError(domain: "LinkDesk", code: 2, userInfo: [NSLocalizedDescriptionKey: "请输入有效的共享端 IP 地址或主机名。"] ) }
         guard input.valid else { throw NSError(domain: "LinkDesk", code: 3, userInfo: [NSLocalizedDescriptionKey: "请使用有效的按键映射及 0.1–10 倍滚动速度。"] ) }
@@ -39,6 +39,9 @@ enum LinkConfiguration {
         coreMode=\(server ? 2 : 1)
         processMode=0
         port=24800
+        preventSleep=false
+        macScreenSaverSync=false
+        macWakeDisplayOnRemoteInput=\(wakeDisplay)
         [computer_\(local)]
         name=\(local)
         [computer_\(peer)]
@@ -63,6 +66,7 @@ enum LinkConfiguration {
         checkPeerFingerprints=true
         [log]
         level=Info
+        \(logPath.map { "toFile=true\nfile=\($0)" } ?? "")
         """ + "\n"
     }
     static func links(local: String, peer: String, layout: String) -> String {

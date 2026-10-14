@@ -5,7 +5,7 @@
     <Nullable>enable</Nullable><ImplicitUsings>disable</ImplicitUsings><AssemblyName>LinkDesk</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>../assets/LinkDesk.ico</ApplicationIcon>
-    <Version>0.4.3</Version>
+    <Version>$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)../VERSION').Trim())</Version>
   </PropertyGroup>
   <ItemGroup><Resource Include="../assets/LinkDesk.ico" Link="Assets/LinkDesk.ico" /></ItemGroup>
 </Project>

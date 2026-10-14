@@ -1,39 +1,52 @@
 import Foundation
 import AppKit
-let recoveryDefaults = UserDefaults(suiteName: "local.linkdesk.tests.recovery")!
+import CryptoKit
 @main struct RecoveryModelTests {
- static func main() {
-  recoveryDefaults.removePersistentDomain(forName: "local.linkdesk.tests.recovery")
-  defer { recoveryDefaults.removePersistentDomain(forName: "local.linkdesk.tests.recovery") }
-  let model = LinkModel()
-  model.autoConnect = true; model.title = "manual-stop-sentinel"
-  NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.didWakeNotification, object: nil)
-  model.stop()
-  RunLoop.main.run(until: Date().addingTimeInterval(3.7))
-  precondition(!model.autoConnect && !model.running && model.title == "manual-stop-sentinel", "queued wake restarted manual stop")
-  model.autoConnect = true
-  NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.didWakeNotification, object: nil)
-  model.autoConnect = false
-  RunLoop.main.run(until: Date().addingTimeInterval(3.7))
-  precondition(!model.running && model.title == "manual-stop-sentinel", "disabled auto connection still recovered")
-  model.autoConnect = true
-  NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.didWakeNotification, object: nil)
-  RunLoop.main.run(until: Date().addingTimeInterval(3.7))
-  precondition(model.title != "manual-stop-sentinel" || model.issue != nil, "wake observer did not attempt recovery")
-  precondition(!model.running, "test unexpectedly started a core")
-  model.autoConnect = false
-  model.server = false
-  model.manualName = "Selected-Peer"; model.manualAddress = "192.0.2.10"
-  model.manualFingerprint = String(repeating: "a", count: 64)
-  model.addManualDevice(); precondition(model.pairing != nil, "pairing did not open")
-  model.trustPeer()
-  model.running = true; model.connected = true; model.autoConnect = true
-  model.observeDevice(PairedDevice(fingerprint: String(repeating: "a", count: 64), name: "Selected-Peer", address: "192.0.2.10", platform: "Windows", role: "client", lastSeen: Date().timeIntervalSince1970))
-  precondition(model.running && model.connected && model.autoConnect, "cached role stopped a healthy pinned connection")
-  model.observeDevice(PairedDevice(fingerprint: String(repeating: "b", count: 64), name: "Other-Peer", address: "192.0.2.11", platform: "Windows", role: "server", lastSeen: Date().timeIntervalSince1970))
-  precondition(model.peerName == "Selected-Peer" && model.host == "192.0.2.10", "different fingerprint substituted for selection")
-  model.running = false; model.connected = false
+ static func runLoop(_ time: Double) { RunLoop.main.run(until: Date().addingTimeInterval(time)) }
+ static func until(_ check: () -> Bool, seconds: Double = 8) { let end = Date().addingTimeInterval(seconds); while !check() { precondition(Date() < end, "model wait timed out"); runLoop(0.05) } }
+ static func main() throws {
+  // Keep the private fixture socket below sockaddr_un's macOS path limit.
+  let root = URL(fileURLWithPath: "/private/tmp").appendingPathComponent("LinkDeskMacModel-"+UUID().uuidString)
+  try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+  defer { try? FileManager.default.removeItem(at: root) }
+  let defaults = UserDefaults(suiteName: "local.linkdesk.tests."+UUID().uuidString)!
+  defaults.set("FixtureMac", forKey: "localName"); defaults.set(true, forKey: "autoConnect"); defaults.set(false, forKey: "allowDiscovery")
+  defaults.set(false, forKey: "server")
+  let fixture = URL(fileURLWithPath: CommandLine.arguments[1]); let core = root.appendingPathComponent("fixture-core")
+  try FileManager.default.copyItem(at: fixture, to: core); try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: core.path)
+  let hash = SHA256.hash(data: try Data(contentsOf: core)).map { String(format: "%02x", $0) }.joined()
+  try JSONSerialization.data(withJSONObject: ["displaySafetyVersion": 1,"sha256":hash]).write(to: root.appendingPathComponent("linkdesk-core.json"))
+  let store = try PeerStore(profile: root)
+  let pin = String(repeating: "a", count: 64)
+  _ = try store.observe(PairedDevice(fingerprint: pin, name: "FixturePeer", address: "127.0.0.1", platform: "Windows", role: "client", lastSeen: 0))
+  try store.pair(pin)
+  func launches() -> [String] { ((try? String(contentsOf: root.appendingPathComponent("launches"), encoding: .utf8)) ?? "").split(separator: "\n").map(String.init) }
+  let model = LinkModel(defaults: defaults, profile: root, engine: core, observeSystemEvents: false, hasDeviceControl: {true}, desktopState: {MacDesktopSnapshot(ready: true, signature: "fixture-display")}, foreignCore: {false}, recoveryDelay: 0.03, ipcPath: root.appendingPathComponent("socket").path)
+  defer { model.shutdown() }
+  model.beginAutomaticStart(); for _ in 0..<100 { model.networkSignal() }; model.resumeSignal(); runLoop(0.2)
+  precondition(launches().isEmpty && !model.running, "legacy auto-connect resurrected a session")
+  precondition(!model.autoStartOnLaunch && !model.wakeDisplayOnRemoteInput, "upgrade defaults were unsafe")
+  model.start(); until({model.connected}); precondition(launches().count == 1)
+  for _ in 0..<100 { model.networkSignal() }; model.resumeSignal(); runLoop(0.4)
+  precondition(launches().count == 1 && model.running, "healthy wake/network restarted core")
+  precondition(model.logs.contains(where: {$0.contains("核心正常，保留进程")}), "native-style IPC probe did not preserve core")
+  model.observeDevice(PairedDevice(fingerprint: pin, name: "FixturePeer", address: "127.0.0.2", platform: "Windows", role: "server", lastSeen: Date().timeIntervalSince1970))
+  until({launches().count == 2 && model.connected})
+  model.stop(); until({!model.running}); for _ in 0..<100 {model.networkSignal()}; model.resumeSignal(); runLoop(0.3)
+  precondition(launches().count == 2 && model.autoConnect, "manual stop was undone or changed recovery preference")
+  model.start(); until({model.connected}); try Data().write(to: root.appendingPathComponent("launches.hold")); model.resumeSignal()
+  until({model.title == "共享核心暂未响应"}, seconds: 5); precondition(model.running && launches().count == 3, "unresponsive core killed/restarted")
+  try FileManager.default.removeItem(at: root.appendingPathComponent("launches.hold")); model.stop(); until({!model.running})
+  model.start(); until({model.connected}); try Data().write(to: root.appendingPathComponent("launches.crash")); model.networkSignal(); until({!model.running}); model.resumeSignal(); runLoop(0.3)
+  precondition(launches().count == 4, "crash relaunched core automatically")
   model.shutdown()
-  print("Mac recovery model checks passed: pending wake respects manual stop and disabled auto-connect; enabled wake reaches recovery; stale role cannot stop a healthy selected connection or substitute another identity.")
+  defaults.set(true, forKey: "autoStartOnLaunch"); defaults.set(true, forKey: "lastSessionRequested")
+  let queued = LinkModel(defaults: defaults, profile: root, engine: core, observeSystemEvents: false, hasDeviceControl: {true}, desktopState: {MacDesktopSnapshot(ready: true, signature: "fixture-display")}, foreignCore: {false}, recoveryDelay: 0.03)
+  queued.beginAutomaticStart(); queued.stop(); runLoop(0.1); precondition(launches().count == 4 && !defaults.bool(forKey:"lastSessionRequested"),"queued startup survived stop"); queued.shutdown()
+  var stable=MacDesktopStability(); let now=Date(); let snapshot=MacDesktopSnapshot(ready:true,signature:"a")
+  precondition(!stable.observe(snapshot,at:now)); precondition(stable.observe(snapshot,at:now.addingTimeInterval(5)))
+  precondition(!stable.observe(MacDesktopSnapshot(ready:false,signature:""),at:now.addingTimeInterval(6)))
+  precondition(!stable.observe(snapshot,at:now.addingTimeInterval(7)))
+  print("Mac actual model checks passed: safe upgrade defaults, 100 network signals, healthy process retention, graceful endpoint reload, manual stop, no hung/crashed relaunch, queued startup cancellation and desktop stability.")
  }
 }

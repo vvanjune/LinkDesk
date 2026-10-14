@@ -41,6 +41,7 @@ public sealed class Preferences {
  public bool AutoDiscover {get;set;}=true;
 }
 public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
+ public string AppVersion => typeof(LinkModel).Assembly.GetName().Version?.ToString(3) ?? "开发版本";
  public event PropertyChangedEventHandler? PropertyChanged;
  private void Changed([CallerMemberName] string? key = null) => PropertyChanged?.Invoke(this,new PropertyChangedEventArgs(key));
  private readonly string folder;

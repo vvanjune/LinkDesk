@@ -4,6 +4,7 @@ import ServiceManagement
 import ApplicationServices
 import Darwin
 import Network
+import CryptoKit
 
 let ink = Color(red: 0.14, green: 0.17, blue: 0.23)
 let accent = Color(red: 0.30, green: 0.32, blue: 0.83)
@@ -13,10 +14,12 @@ final class CoreChannel {
     private var fd: Int32 = -1
     private let lock = NSLock()
     private var stopped = false
+    private let socketPath: String
+    init(path: String? = nil) { socketPath = path ?? FileManager.default.temporaryDirectory.appendingPathComponent("deskflow-core").path }
     func connect(onMessage: @escaping (String) -> Void, onClosed: @escaping () -> Void = {}) {
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self = self else { return }
-            let path = FileManager.default.temporaryDirectory.appendingPathComponent("deskflow-core").path
+            let path = self.socketPath
             var address = sockaddr_un(); address.sun_family = sa_family_t(AF_UNIX)
             let bytes = Array(path.utf8) + [0]
             guard bytes.count <= MemoryLayout.size(ofValue: address.sun_path) else { return }
@@ -115,16 +118,34 @@ final class LinkModel: ObservableObject {
     var pairingLabel: String { devices.first(where: { $0.id == pendingPairID })?.label ?? "另一台电脑" }
     @Published var localFingerprint = "正在准备本机身份…"
     @Published var loginEnabled = false
-    @Published var background = true { didSet { UserDefaults.standard.set(background, forKey: "background") } }
-    @Published var autoConnect = false { didSet { UserDefaults.standard.set(autoConnect, forKey: "autoConnect") } }
+    @Published var background = true { didSet { defaults.set(background, forKey: "background") } }
+    @Published var autoConnect = false { didSet { defaults.set(autoConnect, forKey: "autoConnect"); if !autoConnect { recoveryWork?.cancel(); recoveryRevision = UUID() } } }
+    @Published var autoStartOnLaunch = false { didSet { defaults.set(autoStartOnLaunch, forKey: "autoStartOnLaunch"); if !autoStartOnLaunch { cancelAutomaticStart() } } }
+    @Published var wakeDisplayOnRemoteInput = false { didSet { defaults.set(wakeDisplayOnRemoteInput, forKey: "wakeDisplayOnRemoteInput") } }
+    private var lastSessionRequested = false
+    private var startupWork: DispatchWorkItem?
+    private var startupRevision = UUID()
+    private var recoveryRevision = UUID()
+    private var activeConfiguration = ""
+    private var probeNonce: String?
+    private var probeCompletion: ((Bool) -> Void)?
+    private var suspended = false
+    private var displaySleeping = false
+    private var workspaceObservers: [NSObjectProtocol] = []
+    private let defaults: UserDefaults
+    private let observeSystemEvents: Bool
+    private let hasDeviceControl: () -> Bool
+    private let desktopState: () -> MacDesktopSnapshot
+    private let foreignCore: (() -> Bool)?
+    private let recoveryDelay: TimeInterval
+    private let ipcPath: String?
     @Published var addresses: [String] = []
-    @Published var allowDiscovery = true { didSet { UserDefaults.standard.set(allowDiscovery, forKey: "allowDiscovery"); updateDiscovery() } }
+    @Published var allowDiscovery = true { didSet { defaults.set(allowDiscovery, forKey: "allowDiscovery"); updateDiscovery() } }
     @Published var discoveryStatus = "正在查找局域网设备。"
     private let networkMonitor = NWPathMonitor()
     private var wakeObserver: NSObjectProtocol?
     private var recoveryWork: DispatchWorkItem?
     private var pathSignature: String?
-    private var waking = false
     private var restarting = false
     private var closing = false
     private var recoveryBlocked = false
@@ -132,17 +153,22 @@ final class LinkModel: ObservableObject {
     private var child: Process?
     private var channel: CoreChannel?
     private var desired = false
-    private var failures = 0
     private var generation = UUID()
     private var partial = ""
     private var coreReady = false
     private var handledFingerprints = Set<String>()
-    let settingsDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/LinkDesk")
-    let engine = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/deskflow-core")
-    init() {
-        let d = UserDefaults.standard
+    let settingsDir: URL
+    let engine: URL
+    init(defaults: UserDefaults = .standard, profile: URL? = nil, engine: URL? = nil, observeSystemEvents: Bool = true, hasDeviceControl: @escaping () -> Bool = { AXIsProcessTrusted() }, desktopState: @escaping () -> MacDesktopSnapshot = MacDesktopState.read, foreignCore: (() -> Bool)? = nil, recoveryDelay: TimeInterval = 10, ipcPath: String? = nil) {
+        self.defaults = defaults; self.settingsDir = profile ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/LinkDesk")
+        self.engine = engine ?? Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/deskflow-core")
+        self.observeSystemEvents = observeSystemEvents; self.hasDeviceControl = hasDeviceControl; self.desktopState = desktopState; self.foreignCore = foreignCore; self.recoveryDelay = recoveryDelay; self.ipcPath = ipcPath
+        let d = defaults
         background = d.object(forKey: "background") as? Bool ?? true
-        autoConnect = d.bool(forKey: "autoConnect")
+        autoConnect = d.object(forKey: "autoConnect") as? Bool ?? true
+        autoStartOnLaunch = d.bool(forKey: "autoStartOnLaunch")
+        wakeDisplayOnRemoteInput = d.bool(forKey: "wakeDisplayOnRemoteInput")
+        lastSessionRequested = d.bool(forKey: "lastSessionRequested")
         localName = d.string(forKey: "localName") ?? localName
         peerName = d.string(forKey: "peerName") ?? peerName
         host = d.string(forKey: "host") ?? host
@@ -166,12 +192,12 @@ final class LinkModel: ObservableObject {
             try catalog.migrate(name: peerName, address: host, server: server, input: inputSettings)
             peers = catalog; applySelected(restoreInput: true); refreshDevices(); save()
         } catch { append("身份或设备列表准备失败：" + error.localizedDescription); detail = error.localizedDescription }
-        syncLogin(); refreshAddresses(); updateDiscovery()
-        watchNetwork()
-        if autoConnect { DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.start() } }
+        if observeSystemEvents { syncLogin(); watchNetwork() }
+        refreshAddresses(); updateDiscovery()
+        append("启动应用与自动开始共享已分开；不继承旧版自动启动行为。")
     }
     private func prepareIdentity() throws {
-        let legacy = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Deskflow/tls")
+        let legacy = observeSystemEvents ? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Deskflow/tls") : settingsDir.appendingPathComponent("no-legacy")
         localFingerprint = try LinkIdentity.prepare(at: settingsDir, legacy: legacy)
     }
     private func watchNetwork() {
@@ -187,38 +213,77 @@ final class LinkModel: ObservableObject {
             }
         }
         networkMonitor.start(queue: DispatchQueue(label: "LinkDesk.Network"))
-        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
-            self?.waking = true; self?.scheduleRecovery("电脑唤醒")
+        let center = NSWorkspace.shared.notificationCenter
+        workspaceObservers.append(center.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in self?.suspended = true; self?.cancelQueuedRecovery() })
+        workspaceObservers.append(center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in self?.resumeSignal() })
+        workspaceObservers.append(center.addObserver(forName: NSWorkspace.screensDidSleepNotification, object: nil, queue: .main) { [weak self] _ in self?.displaySleeping = true; self?.cancelAutomaticStart() })
+        workspaceObservers.append(center.addObserver(forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: .main) { [weak self] _ in self?.displaySleeping = false; self?.beginAutomaticStart() })
+    }
+    func beginAutomaticStart() {
+        cancelAutomaticStart()
+        guard !closing, autoStartOnLaunch, lastSessionRequested, !running, !desired else { return }
+        let revision = startupRevision; var stability = MacDesktopStability()
+        title = "等待桌面准备就绪"; detail = "登录桌面和显示路径稳定后恢复共享；停止可取消。"
+        func check() {
+            guard !self.closing, self.startupRevision == revision, self.autoStartOnLaunch, self.lastSessionRequested, !self.running else { return }
+            let snapshot = self.desktopState()
+            if !self.suspended && !self.displaySleeping && self.hasDeviceControl() && stability.observe(snapshot, at: Date()) { self.start(); return }
+            let work = DispatchWorkItem { check() }; self.startupWork = work; DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: work)
+        }
+        let work = DispatchWorkItem { check() }; startupWork = work; DispatchQueue.main.asyncAfter(deadline: .now() + 15, execute: work)
+    }
+    private func cancelAutomaticStart() { startupRevision = UUID(); startupWork?.cancel(); startupWork = nil }
+    private func cancelQueuedRecovery() { cancelAutomaticStart(); recoveryRevision = UUID(); recoveryWork?.cancel() }
+    func resumeSignal() { suspended = false; append("电脑唤醒：检查已有核心，不强制重启。"); if desired { scheduleRecovery("电脑唤醒") } else { beginAutomaticStart() } }
+    func networkSignal() { refreshAddresses(); scheduleRecovery("网络变化") }
+    private var configurationSignature: String { "\(server)|\(localName)|\(peerName)|\(server ? "" : host)|\(layout)|\(inputSettings)|\(wakeDisplayOnRemoteInput)|\(selectedDevice?.fingerprint ?? "")" }
+    private func probeCore(_ completion: @escaping (Bool) -> Void) {
+        guard coreReady, let channel = channel else { completion(false); return }
+        let nonce = UUID().uuidString; probeNonce = nonce; probeCompletion = completion
+        channel.send("ping=" + nonce)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            guard let self = self, self.probeNonce == nonce else { return }
+            self.finishProbe(false)
         }
     }
-    private func scheduleRecovery(_ reason: String, force: Bool = false) {
-        guard autoConnect, !closing else { return }
-        if force { waking = true }
-        recoveryWork?.cancel()
-        let work = DispatchWorkItem { [weak self] in self?.recover(reason) }
-        recoveryWork = work; DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)
+    private func finishProbe(_ result: Bool) { let completion = probeCompletion; probeNonce = nil; probeCompletion = nil; completion?(result) }
+    private func scheduleRecovery(_ reason: String) {
+        guard autoConnect, desired, !closing, !suspended, !recoveryBlocked else { return }
+        recoveryWork?.cancel(); let revision = UUID(); recoveryRevision = revision
+        let work = DispatchWorkItem { [weak self] in self?.recover(reason, revision: revision) }
+        recoveryWork = work; DispatchQueue.main.asyncAfter(deadline: .now() + recoveryDelay, execute: work)
     }
-    private func recover(_ reason: String) {
-        guard autoConnect, !closing, !restarting, !recoveryBlocked else { return }
-        refreshAddresses(); let wasWaking = waking; waking = false
-        guard !addresses.isEmpty else { return }
-        guard AXIsProcessTrusted() else { title = "需要设备控制权限"; return }
-        if running && coreReady && !wasWaking && (connected || server) { return }
-        append("\(reason)，正在恢复共享。")
-        guard let owned = child, owned.isRunning else { start(); return }
-        restarting = true; desired = true; generation = UUID(); let token = generation
-        channel?.send("stop"); channel?.disconnect(); channel = nil; coreReady = false; connected = false
-        title = "正在恢复共享"; detail = "网络就绪后继续使用上次配置。"
-        DispatchQueue.global(qos: .utility).async {
-            let deadline = Date().addingTimeInterval(2)
-            while owned.isRunning && Date() < deadline { usleep(50_000) }
-            if owned.isRunning { owned.terminate() }
-            let exitDeadline = Date().addingTimeInterval(2)
-            while owned.isRunning && Date() < exitDeadline { usleep(50_000) }
-            DispatchQueue.main.async {
-                guard self.generation == token else { return }
-                self.restarting = false; self.running = owned.isRunning
-                if self.autoConnect && !self.closing && !owned.isRunning { self.start() }
+    private func recover(_ reason: String, revision: UUID) {
+        guard autoConnect, desired, !closing, !suspended, !restarting, !recoveryBlocked, recoveryRevision == revision else { return }
+        refreshAddresses()
+        guard !addresses.isEmpty, hasDeviceControl(), desktopState().ready else { append(reason + "：网络或桌面尚未就绪，保留核心。"); return }
+        guard let owned = child, owned.isRunning else { desired = false; recoveryBlocked = true; lastSessionRequested = false; defaults.set(false, forKey: "lastSessionRequested"); return }
+        restarting = true
+        probeCore { [weak self] responsive in
+            guard let self = self else { return }
+            guard self.autoConnect, self.desired, !self.closing, self.recoveryRevision == revision else { self.restarting = false; return }
+            let changed = self.configurationSignature != self.activeConfiguration
+            if !changed {
+                self.restarting = false
+                if responsive { self.append(reason + "：核心正常，保留进程 pid=\(owned.processIdentifier)。") }
+                else { self.recoveryBlocked = true; self.title = "共享核心暂未响应"; self.detail = "保留进程，不自动反复重启。请查看日志后手动停止并重试。" }
+                return
+            }
+            self.append(reason + "：所选配置改变，请求旧核心正常退出。")
+            self.generation = UUID(); let token = self.generation
+            self.channel?.send("stop"); self.channel?.disconnect(); self.channel = nil; self.coreReady = false; self.connected = false
+            DispatchQueue.global(qos: .utility).async {
+                let deadline = Date().addingTimeInterval(5)
+                while owned.isRunning && Date() < deadline { usleep(50_000) }
+                DispatchQueue.main.async {
+                    self.restarting = false
+                    guard self.generation == token else { return }
+                    self.running = owned.isRunning
+                    if owned.isRunning { self.recoveryBlocked = true; self.title = "等待旧共享进程退出"; self.detail = "自动恢复暂停，避免强制终止后反复启动。"; return }
+                    self.child = nil
+                    guard self.autoConnect, self.desired, !self.closing, self.recoveryRevision == revision else { return }
+                    self.start()
+                }
             }
         }
     }
@@ -276,7 +341,7 @@ final class LinkModel: ObservableObject {
                 let returned = Date().timeIntervalSince(lastSelectedSeen) > 12; lastSelectedSeen = Date()
                 applySelected(restoreInput: false); save()
                 if old?.address != incoming.address || old?.name != incoming.name || returned {
-                    scheduleRecovery("已核对所选设备的身份", force: old?.name != incoming.name || (!server && old?.address != incoming.address))
+                    scheduleRecovery("已核对所选设备的身份")
                 }
             }
         } catch { append("设备列表：" + error.localizedDescription) }
@@ -303,7 +368,7 @@ final class LinkModel: ObservableObject {
         addresses = list
     }
     func save() {
-        let d = UserDefaults.standard
+        let d = defaults
         d.set(localName, forKey: "localName"); d.set(peerName, forKey: "peerName")
         d.set(host, forKey: "host"); d.set(server, forKey: "server"); d.set(layout, forKey: "layout")
         d.set(commandMap, forKey: "commandMap"); d.set(controlMap, forKey: "controlMap")
@@ -321,14 +386,24 @@ final class LinkModel: ObservableObject {
         optionMap = "alt"; shiftMap = "shift"
     }
     func append(_ line: String) {
-        logs.append(line); if logs.count > 300 { logs.removeFirst(logs.count - 300) }
+        let entry = ISO8601DateFormatter().string(from: Date()) + " " + line
+        logs.append(entry); if logs.count > 300 { logs.removeFirst(logs.count - 300) }
+        let file = settingsDir.appendingPathComponent("linkdesk-session.log")
+        do {
+            try FileManager.default.createDirectory(at: settingsDir, withIntermediateDirectories: true)
+            if let size = try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize, size > 2_097_152 { let backup = file.appendingPathExtension("1"); try? FileManager.default.removeItem(at: backup); try FileManager.default.moveItem(at: file, to: backup) }
+            if !FileManager.default.fileExists(atPath: file.path) { _ = FileManager.default.createFile(atPath: file.path, contents: nil) }
+            let handle = try FileHandle(forWritingTo: file); defer { try? handle.close() }; try handle.seekToEnd(); try handle.write(contentsOf: Data((entry + "\n").utf8))
+        } catch { }
+
     }
     func start() {
-        guard !running else { return }
+        cancelAutomaticStart()
+        guard !running, !closing else { return }
         recoveryBlocked = false
         guard selectedDevice != nil else { tab = "devices"; issue = "请先选择并核对一台电脑。"; return }
         applySelected(restoreInput: false)
-        guard AXIsProcessTrusted() else {
+        guard hasDeviceControl() else {
             recoveryBlocked = true
             title = "需要设备控制权限"
             detail = "请在系统设置中允许 LinkDesk，然后再次启动。"
@@ -338,7 +413,7 @@ final class LinkModel: ObservableObject {
         guard FileManager.default.isExecutableFile(atPath: engine.path) else {
             issue = "安装包中的连接核心不完整，请重新下载完整 LinkDesk 安装包。"; return
         }
-        if !NSRunningApplication.runningApplications(withBundleIdentifier: "org.deskflow.deskflow").isEmpty {
+        if observeSystemEvents && !NSRunningApplication.runningApplications(withBundleIdentifier: "org.deskflow.deskflow").isEmpty {
             issue = "请先从 Deskflow 菜单选择“退出 Deskflow”，再在这里启动。两个界面不能同时管理同一个连接核心。"; return
         }
         if anotherCoreRunning() { issue = "Deskflow 连接核心仍在运行。请先退出原版 Deskflow，再启动 LinkDesk。"; return }
@@ -347,12 +422,20 @@ final class LinkModel: ObservableObject {
             guard let session = try peers?.session(server: server) else { throw NSError(domain: "LinkDesk", code: 7, userInfo: [NSLocalizedDescriptionKey: "设备列表未就绪。"] ) }
             activeProfile = session
             let config = session.appendingPathComponent("linkdesk-server.conf")
-            let text = try LinkConfiguration.settings(local: localName, peer: peerName, server: server, host: host, layout: layout, configPath: config.path, input: inputSettings)
+            let text = try LinkConfiguration.settings(local: localName, peer: peerName, server: server, host: host, layout: layout, configPath: config.path, input: inputSettings, wakeDisplay: wakeDisplayOnRemoteInput, logPath: session.appendingPathComponent("linkdesk-core.log").path)
             try FileManager.default.createDirectory(at: settingsDir, withIntermediateDirectories: true)
             try text.write(to: session.appendingPathComponent("LinkDesk.conf"), atomically: true, encoding: .utf8)
             try LinkConfiguration.links(local: localName, peer: peerName, layout: layout).write(to: config, atomically: true, encoding: .utf8)
-            save(); desired = true; failures = 0; autoConnect = true; launch()
+            try verifyProtectedCore()
+            save(); desired = true; lastSessionRequested = true; defaults.set(true, forKey: "lastSessionRequested"); activeConfiguration = configurationSignature
+            append("明确启动共享；用途=" + (server ? "共享" : "接收")); launch()
         } catch { issue = error.localizedDescription }
+    }
+    private func verifyProtectedCore() throws {
+        let manifest = engine.deletingLastPathComponent().appendingPathComponent("linkdesk-core.json")
+        let metadata = try JSONSerialization.jsonObject(with: Data(contentsOf: manifest)) as? [String: Any]
+        let hash = SHA256.hash(data: try Data(contentsOf: engine)).map { String(format: "%02x", $0) }.joined()
+        guard metadata?["displaySafetyVersion"] as? Int == 1, metadata?["sha256"] as? String == hash else { throw NSError(domain: "LinkDesk", code: 9, userInfo: [NSLocalizedDescriptionKey: "显示保护核心校验失败，请重新下载完整安装包。"] ) }
     }
     private func launch() {
         if anotherCoreRunning() { desired = false; running = false; title = "另一个连接正在运行"; detail = "请先退出原版 Deskflow，再启动共享。"; return }
@@ -374,20 +457,17 @@ final class LinkModel: ObservableObject {
             DispatchQueue.main.async {
                 guard let self = self, self.generation == token else { return }
                 self.running = false; self.connected = false; self.channel?.disconnect(); self.channel = nil
-                if self.desired && proc.terminationStatus != 0 {
-                    self.failures += 1; self.title = "连接未启动"; self.detail = "请查看日志，检查权限或是否有其他连接程序在运行。"
-                    if self.failures <= 3 {
-                        let delay = Double(self.failures * 5); self.append("将在 \(Int(delay)) 秒后重试启动。")
-                        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { if self.desired && self.generation == token { self.launch() } }
-                    } else { self.desired = false; self.append("已停止自动重试，请处理错误后再次启动。") }
-                } else { self.title = "已停止"; self.detail = "点击启动，恢复键鼠共享。"; self.desired = false }
+                self.desired = false; self.lastSessionRequested = false; self.defaults.set(false, forKey: "lastSessionRequested"); self.recoveryBlocked = true; self.finishProbe(false)
+                self.title = proc.terminationStatus == 0 ? "已停止" : "共享核心意外停止"
+                self.detail = "请查看连接日志；确认后手动启动，不自动反复重试。"
+                self.append("核心退出：pid=\(proc.processIdentifier) exit=\(proc.terminationStatus)；不自动反复拉起。")
             }
         }
         do {
-            try p.run(); child = p; running = true; title = "正在启动连接"; detail = "正在准备加密连接。"
+            try p.run(); child = p; append("核心启动：pid=\(p.processIdentifier)"); running = true; title = "正在启动连接"; detail = "正在准备加密连接。"
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [self] in
                 guard self.running, self.generation == token else { return }
-                let channel = CoreChannel(); self.channel = channel
+                let channel = CoreChannel(path: self.ipcPath); self.channel = channel
                 channel.connect(onMessage: { [weak self] message in guard self?.generation == token else { return }; self?.handle(message) }, onClosed: { [weak self] in
                     guard let self = self, self.generation == token, self.running else { return }
                     self.coreReady = false; self.connected = false; self.scheduleRecovery("共享状态通道断开")
@@ -395,34 +475,35 @@ final class LinkModel: ObservableObject {
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
                 guard self.generation == token, self.running, !self.coreReady else { return }
-                self.desired = false; self.channel?.send("stop"); if p.isRunning { p.terminate() }
-                self.issue = "连接核心启动超时。请检查设备控制权限，以及是否有另一份 Deskflow 在运行。"
-                self.append("启动超过 10 秒且未收到核心状态，已停止本次启动。")
+                self.recoveryBlocked = true; self.title = "共享状态通道暂未响应"
+                self.detail = "保留进程，请检查权限与日志后手动停止重试。"
+                self.append("启动超过 10 秒且未收到核心状态，暂停自动恢复，不强制终止。")
             }
         } catch { desired = false; issue = error.localizedDescription; title = "启动失败" }
     }
     private func anotherCoreRunning() -> Bool {
+        if let check = foreignCore { return check() }
         let check = Process(); check.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep"); check.arguments = ["-x", "deskflow-core"]
         check.standardOutput = FileHandle.nullDevice; check.standardError = FileHandle.nullDevice
         do { try check.run(); check.waitUntilExit(); return check.terminationStatus == 0 } catch { return false }
     }
     func stop() {
-        desired = false; autoConnect = false; connected = false
-        recoveryWork?.cancel(); waking = false
+        desired = false; lastSessionRequested = false; defaults.set(false, forKey: "lastSessionRequested"); connected = false
+        cancelQueuedRecovery(); finishProbe(false)
         guard let child = child, child.isRunning else { running = false; return }
         channel?.send("stop")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-            if child.isRunning { child.terminate() }
-            if self.child === child && !self.autoConnect { self.running = false; self.title = "已停止"; self.detail = "点击启动，恢复键鼠共享。" }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+            if child.isRunning { self.append("用户停止超时，终止持有的核心：pid=\(child.processIdentifier)"); child.terminate() }
+            if self.child === child && !self.desired { self.running = false; self.title = "已停止"; self.detail = "点击启动，恢复键鼠共享。" }
         }
         title = "正在停止"; detail = "正在结束共享连接。"
     }
     func shutdown() {
-        closing = true; recoveryWork?.cancel(); networkMonitor.cancel(); stopDiscovery()
-        if let observer = wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
+        closing = true; generation = UUID(); cancelQueuedRecovery(); finishProbe(false); networkMonitor.cancel(); stopDiscovery()
+        for observer in workspaceObservers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }; workspaceObservers.removeAll()
         desired = false; channel?.send("stop")
         if let child = child {
-            let deadline = Date().addingTimeInterval(2)
+            let deadline = Date().addingTimeInterval(5)
             while child.isRunning && Date() < deadline { usleep(50_000) }
             if child.isRunning { child.terminate() }
         }
@@ -444,6 +525,7 @@ final class LinkModel: ObservableObject {
         let pieces = message.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
         let command = String(pieces[0]); let args = pieces.count > 1 ? String(pieces[1]) : ""
         switch command {
+        case "pong": if args == probeNonce { finishProbe(true) }
         case "hello": coreReady = true; updateDiscovery(); title = server ? "等待所选设备" : "正在连接所选设备"; detail = "加密连接开启，网络恢复后会自动重连。"
         case "connectionState":
             connected = args == "Connected"
@@ -467,8 +549,8 @@ final class LinkModel: ObservableObject {
     func syncLogin() { loginEnabled = SMAppService.mainApp.status == .enabled }
     func setLogin(_ value: Bool) {
         do {
-            if value { try SMAppService.mainApp.register(); autoConnect = true }
-            else { try SMAppService.mainApp.unregister() }
+            if value { try SMAppService.mainApp.register() }
+            else { try SMAppService.mainApp.unregister(); cancelAutomaticStart() }
             syncLogin()
             if value && !loginEnabled { issue = "请在系统设置的“登录项与扩展”中批准 LinkDesk。"; SMAppService.openSystemSettingsLoginItems() }
         } catch { syncLogin(); issue = "自启动设置未生效：\(error.localizedDescription)。请先把 LinkDesk 移到“应用程序”目录后重试。" }
@@ -509,7 +591,7 @@ struct WindowHook: NSViewRepresentable {
     @StateObject var model = LinkModel()
     var body: some Scene {
         Window("LinkDesk", id: "main") {
-            RootView(model: model).background(WindowHook(delegate: delegate)).onAppear { delegate.model = model }
+            RootView(model: model).background(WindowHook(delegate: delegate)).onAppear { delegate.model = model; model.beginAutomaticStart() }
                 .alert("需要处理", isPresented: Binding(get: { model.issue != nil }, set: { if !$0 { model.issue = nil } })) {
                     if model.issue?.contains("设备控制") == true || model.issue?.contains("辅助功能") == true { Button("打开系统设置") { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!); model.issue = nil } }
                     Button("知道了") { model.issue = nil }
@@ -543,7 +625,7 @@ struct RootView: View {
                 }.padding(.top, 16)
                 Spacer()
                 Label("基于 Deskflow 1.27", systemImage: "lock.shield").font(.caption).foregroundStyle(.secondary)
-                Text("LinkDesk · 0.4.2").font(.caption2).foregroundStyle(.tertiary)
+                Text("LinkDesk · \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "开发版本")").font(.caption2).foregroundStyle(.tertiary)
             }.padding(24).frame(width: 210).frame(maxHeight: .infinity).background(.white.opacity(0.72))
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
@@ -655,13 +737,20 @@ struct RootView: View {
     @ViewBuilder var settings: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("启动与后台").font(.headline)
-            settingRow("登录后自启动", "登录这台 Mac 后，自动打开 LinkDesk 并启动连接。", Binding(get: { model.loginEnabled }, set: { model.setLogin($0) }))
+            settingRow("登录后自启动", "登录 Mac 后只打开应用，不会强制开始共享。", Binding(get: { model.loginEnabled }, set: { model.setLogin($0) }))
             Divider()
-            settingRow("自动连接与恢复", "打开应用、网络恢复或唤醒后，继续上次共享。手动停止后保持停止。", $model.autoConnect)
+            settingRow("启动后自动开始共享", "默认关闭。开启后等待登录桌面与显示路径稳定，恢复上次主动开始且未停止的共享。", $model.autoStartOnLaunch)
+            Divider()
+            settingRow("网络恢复与唤醒后重连", "保留正常核心；只恢复已开始的共享。手动停止后保持停止。", $model.autoConnect)
             Divider()
             settingRow("关闭窗口后留在后台", "窗口关闭后继续共享，通过菜单栏图标重新打开。", $model.background)
             Divider()
             settingRow("局域网发现与自动查找", "发现同一局域网的电脑，核对所选设备身份后更新地址。", $model.allowDiscovery)
+        }.padding(24).background(.white, in: RoundedRectangle(cornerRadius: 20))
+        VStack(alignment: .leading, spacing: 16) {
+            Text("显示保护").font(.headline)
+            settingRow("允许远程键鼠请求点亮屏幕", "默认关闭。接收端只在实际远程输入时请求，每次熄屏最多一次；连接和切换电脑不主动点亮。", $model.wakeDisplayOnRemoteInput).disabled(model.running)
+            Text("这是接收端本机的设置。普通键鼠输入仍可能被系统视为活动，不控制另一台电脑的显示器。").font(.caption).foregroundStyle(.secondary)
         }.padding(24).background(.white, in: RoundedRectangle(cornerRadius: 20))
         VStack(alignment: .leading, spacing: 16) {
             Text("电脑与网络").font(.headline)

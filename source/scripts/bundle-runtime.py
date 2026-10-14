@@ -7,6 +7,7 @@ parser.add_argument("platform", choices=["mac", "windows"])
 parser.add_argument("upstream", type=Path)
 parser.add_argument("output", type=Path)
 parser.add_argument("--patched-windows-core", type=Path)
+parser.add_argument("--patched-mac-core", type=Path)
 args = parser.parse_args()
 root = args.upstream.resolve()
 out = args.output.resolve()
@@ -15,13 +16,37 @@ if not licenses.is_dir():
     raise SystemExit("Missing source/third-party license notices")
 
 if args.platform == "mac":
+    if not args.patched_mac_core or not args.patched_mac_core.is_file():
+        raise SystemExit("Mac 0.4.4 requires the validated display-safe core; no upstream fallback")
     root = root / "Contents"
     core = root / "MacOS/deskflow-core"
     if not core.is_file():
         raise SystemExit("Select the official Deskflow.app bundle to prepare this build")
     destination = out / "Contents"
     (destination / "MacOS").mkdir(parents=True, exist_ok=True)
-    shutil.copy2(core, destination / "MacOS/deskflow-core")
+    original_hash = hashlib.sha256(core.read_bytes()).hexdigest()
+    patched_hash = hashlib.sha256(args.patched_mac_core.read_bytes()).hexdigest()
+    if original_hash == patched_hash:
+        raise SystemExit("Unpatched Mac core refused")
+    prepared = destination / "MacOS/deskflow-core"
+    shutil.copy2(args.patched_mac_core, prepared)
+    prepared.chmod(0o755)
+    import subprocess
+    commands = subprocess.check_output(["otool", "-l", str(prepared)], text=True).splitlines()
+    rpaths = [commands[i+2].strip().split(" ")[1] for i,line in enumerate(commands) if line.strip() == "cmd LC_RPATH"]
+    for rpath in rpaths:
+        if not rpath.startswith("@"):
+            subprocess.run(["install_name_tool", "-delete_rpath", rpath, str(prepared)], check=True)
+    if "@loader_path/../Frameworks" not in rpaths:
+        subprocess.run(["install_name_tool", "-add_rpath", "@loader_path/../Frameworks", str(prepared)], check=True)
+    patch = Path(__file__).resolve().parent.parent / "core-patches/mac-display-safety.patch"
+    (destination / "MacOS/linkdesk-core.json").write_text(json.dumps({
+        "displaySafetyVersion": 1, "sha256": hashlib.sha256(prepared.read_bytes()).hexdigest(),
+        "builtCoreSha256": patched_hash, "upstreamVersion": "1.27.0",
+        "upstreamRef": "90376dfaba2c28dd61c5d4453ae5641c6edec5a3",
+        "upstreamCommit": "081f6478e654a112168879e67a41ce7d7e4ae3af",
+        "patchSha256": hashlib.sha256(patch.read_bytes()).hexdigest(), "officialCoreSha256": original_hash
+    }, indent=2) + "\n")
     for name in ["Frameworks", "PlugIns", "Libraries"]:
         if (root / name).exists():
             if (destination / name).exists():
@@ -72,8 +97,7 @@ else:
 if notices.exists():
     shutil.rmtree(notices)
 shutil.copytree(licenses, notices)
-if args.platform == "windows":
-    shutil.copy2(patch, notices / "windows-display-safety.patch")
+shutil.copy2(patch, notices / patch.name)
 manifest = {}
 for path in sorted(runtime.rglob("*")):
     if not path.is_file() or path.is_symlink() or "ThirdParty" in path.parts:
