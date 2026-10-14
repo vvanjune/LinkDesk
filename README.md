@@ -1,10 +1,10 @@
 # LinkDesk
 
-一套键鼠，连接 Mac 与 Windows。当前 Windows **0.4.3 修复构建验证中**，Mac **0.4.2 独立版**，Mac 使用 SwiftUI，Windows 使用 WPF。两端内置 Deskflow 1.27.0 连接核心与必要运行库，无需另装 Deskflow；Windows 无需另装 .NET。
+一套键鼠，连接 Mac 与 Windows。当前 Windows **0.4.3 显示保护版**，Mac **0.4.2 独立版**，Mac 使用 SwiftUI，Windows 使用 WPF。两端内置 Deskflow 1.27.0 连接核心与必要运行库，无需另装 Deskflow；Windows 无需另装 .NET。
 
 ## 下载与连接
 
-0.4.2 修复源码见 [源码发布页](https://github.com/vvanjune/LinkDesk/releases/tag/v0.4.2)。双端完整安装包已构建和校验，但 GitHub 大文件上传多次超时，当前发布页暂不提供 0.4.2 安装包。此前的完整包及未改动的上游源码资料见 [v0.4.0 发布页](https://github.com/vvanjune/LinkDesk/releases/tag/v0.4.0)；旧版安装包仍有本次已修复的用途缓存问题。
+Windows 0.4.3 完整包与对应源码见 [发布页](https://github.com/vvanjune/LinkDesk/releases/tag/v0.4.3)。Mac 本轮保持 0.4.2，可继续使用已有安装，无需重新授权。此前的完整包及未改动的上游源码资料见 [v0.4.0 发布页](https://github.com/vvanjune/LinkDesk/releases/tag/v0.4.0)；旧 Windows 包没有本次显示保护修复。
 
 这是测试发布，Mac 使用本地签名、尚未公证，Windows 尚未进行发布签名。支持 Apple Silicon Mac 与 Windows x64。
 
@@ -28,7 +28,7 @@
 
 切换用途后，旧设备公告曾让两端被错误判定为用途相同，导致不能启动或连接被停止。现在保存和启动都会刷新公告；缓存用途用于显示，不再阻断所选身份的连接。完整指纹校验与所选设备的独立 TLS 信任范围不变。
 
-Swift、C# 回归检查通过，双端构建与 Mac 签名检查通过。0.4.2 更新后的实机验证另行记录。Windows 0.4.3 正在验证启动和显示保护修复，尚不能宣称通过实际显卡黑屏验收。Mac 接收端光标暂时不可见仍未确认根因；见 [排查记录](排查记录.md)。
+Swift、C# 回归检查通过，双端构建与 Mac 签名检查通过。0.4.2 更新后的实机验证另行记录。Windows 0.4.3 的启动、恢复、原生唤醒策略与运行库自动检查已通过，尚不能宣称通过实际显卡黑屏验收。Mac 接收端光标暂时不可见仍未确认根因；见 [排查记录](排查记录.md)。
 
 ## 日常使用
 
