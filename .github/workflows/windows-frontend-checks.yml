@@ -44,12 +44,11 @@ jobs:
       - name: Verify background login does not show a window or start sharing
         shell: pwsh
         run: |
-          $profile=Join-Path $env:RUNNER_TEMP ('LinkDeskSmoke-'+[guid]::NewGuid().ToString('N'))
-          New-Item $profile -ItemType Directory | Out-Null
+          # This disposable hosted runner has no real user application profile.
+          $profile=[Environment]::GetFolderPath('LocalApplicationData')
           $start=[System.Diagnostics.ProcessStartInfo]::new((Join-Path $PWD 'frontend/LinkDesk.exe'))
           $start.UseShellExecute=$false
           $start.ArgumentList.Add('--background')
-          $start.Environment['LOCALAPPDATA']=$profile
           $process=[System.Diagnostics.Process]::Start($start)
           try {
             Start-Sleep -Seconds 5
