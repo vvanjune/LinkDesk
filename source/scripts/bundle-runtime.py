@@ -53,7 +53,8 @@ else:
     patch = Path(__file__).resolve().parent.parent / "core-patches/windows-display-safety.patch"
     (runtime / "linkdesk-core.json").write_text(json.dumps({
         "displaySafetyVersion": 1, "sha256": patched_hash,
-        "upstreamVersion": "1.27.0", "upstreamCommit": "90376dfaba2c28dd61c5d4453ae5641c6edec5a3",
+        "upstreamVersion": "1.27.0", "upstreamRef": "90376dfaba2c28dd61c5d4453ae5641c6edec5a3",
+        "upstreamCommit": "081f6478e654a112168879e67a41ce7d7e4ae3af",
         "patchSha256": hashlib.sha256(patch.read_bytes()).hexdigest(),
         "officialCoreSha256": original_hash
     }, indent=2) + "\n")

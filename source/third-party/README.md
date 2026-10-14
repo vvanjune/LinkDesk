@@ -1,6 +1,6 @@
 # Bundled runtime notices
 
-LinkDesk macOS 0.4.2 includes the official Deskflow 1.27.0 core. Windows 0.4.3 builds that core from pinned commit 90376dfaba2c28dd61c5d4453ae5641c6edec5a3 with source/core-patches/windows-display-safety.patch. Required Qt/OpenSSL/MSVC runtime files remain unchanged from the official distribution. On macOS nested executables are locally signed as part of the LinkDesk bundle; this does not alter their source behavior.
+LinkDesk macOS 0.4.2 includes the official Deskflow 1.27.0 core. Windows 0.4.3 builds that core from commit 081f6478e654a112168879e67a41ce7d7e4ae3af from immutable release-tag object 90376dfaba2c28dd61c5d4453ae5641c6edec5a3 with source/core-patches/windows-display-safety.patch. Required Qt/OpenSSL/MSVC runtime files remain unchanged from the official distribution. On macOS nested executables are locally signed as part of the LinkDesk bundle; this does not alter their source behavior.
 
 - Deskflow 1.27.0: GPL-2.0-only with the upstream OpenSSL exception. See deskflow-1.27.0/LICENSE and LICENSE_EXCEPTION.
 - Qt Base and Qt SVG 6.11.3: see the Qt LICENSES folders and third-party copyright files. These are separate shared libraries/frameworks and may be replaced or rebuilt under their licenses. macOS replacements require re-signing the application bundle.
