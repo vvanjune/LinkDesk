@@ -1,10 +1,10 @@
 # LinkDesk
 
-一套键鼠，连接 Mac 与 Windows。当前 Windows **0.4.3 显示保护版**，Mac **0.4.2 独立版**，Mac 使用 SwiftUI，Windows 使用 WPF。两端内置 Deskflow 1.27.0 连接核心与必要运行库，无需另装 Deskflow；Windows 无需另装 .NET。
+一套键鼠，连接 Mac 与 Windows。当前双端 **0.4.4 独立版**，Mac 使用 SwiftUI，Windows 使用 WPF。两端内置 Deskflow 1.27.0 连接核心与必要运行库，无需另装 Deskflow；Windows 无需另装 .NET。
 
 ## 下载与连接
 
-Windows 0.4.3 完整包与对应源码见 [发布页](https://github.com/vvanjune/LinkDesk/releases/tag/v0.4.3)。Mac 本轮保持 0.4.2，可继续使用已有安装，无需重新授权。此前的完整包及未改动的上游源码资料见 [v0.4.0 发布页](https://github.com/vvanjune/LinkDesk/releases/tag/v0.4.0)；旧 Windows 包没有本次显示保护修复。
+Mac 与 Windows 0.4.4 完整包及源码见 [统一发布页](https://github.com/vvanjune/LinkDesk/releases/tag/v0.4.4)。两端从 source/VERSION 构建同一版本，界面读取实际构建版本；本轮 Mac 也需要更新。未改动的上游源码资料见 [v0.4.0 发布页](https://github.com/vvanjune/LinkDesk/releases/tag/v0.4.0)。
 
 这是测试发布，Mac 使用本地签名、尚未公证，Windows 尚未进行发布签名。支持 Apple Silicon Mac 与 Windows x64。
 
@@ -32,12 +32,18 @@ Swift、C# 回归检查通过，双端构建与 Mac 签名检查通过。0.4.2 �
 
 ## 日常使用
 
-Windows 0.4.3 将“登录后打开应用”和“启动后开始共享”分开；升级后默认关闭自动开始共享和主动唤醒显示器。网络恢复合并 10 秒内的连续变化，正常进程在唤醒后保留，异常进程暂停自动恢复。手动停止后保持停止。关闭窗口可留在后台。按键映射在共享端设置，远程滚动方向和速度在接收端设置，不改本机输入或 Mos。没有新增切换快捷键。
+双端 0.4.4 将“登录后打开应用”和“启动后开始共享”分开；升级后默认关闭自动开始共享和额外主动点亮屏幕。网络恢复合并 10 秒内的连续变化，正常进程在唤醒后保留，异常进程暂停自动恢复。手动停止后保持停止，不改变恢复偏好。关闭窗口可留在后台。按键映射在共享端设置，远程滚动方向和速度在接收端设置，不改本机输入或 Mos。没有新增切换快捷键。
 
 ## 开发与许可
 
 源码在 source；构建需要 Swift 工具链或 .NET 10 SDK、Python 3，以及官方 Deskflow 1.27.0 二进制发行包作为嵌入输入。构建依赖不会成为用户的外部安装依赖。Windows 0.4.3 还需由固定版本上游源码和公开补丁构建的核心，打包程序拒绝回退到旧核心。步骤与测试见 [技术说明](source/README.md)。
 
-LinkDesk 源码采用 [GPL-2.0-only](LICENSE)。传输核心来自 [Deskflow](https://github.com/deskflow/deskflow)，Windows 0.4.3 对显示唤醒与本地保活接口做了可审查的补丁，Mac 核心保持原版。上游许可和运行库声明见 [third-party](source/third-party/README.md)，对应上游源码与安装包一同发布。
+LinkDesk 源码采用 [GPL-2.0-only](LICENSE)。传输核心来自 [Deskflow](https://github.com/deskflow/deskflow)，双端分别对本机显示唤醒与本地保活接口应用公开补丁。上游许可和运行库声明见 [third-party](source/third-party/README.md)，对应源码和补丁与安装包一起提供。
+
+## 0.4.4 设置对应
+
+Mac 补齐独立的启动后自动共享、网络与唤醒恢复、接收端本机屏幕点亮控制。两端屏幕开关各自控制本机接收行为，不自动替另一台电脑改设置；普通键鼠输入仍可能被系统作为活动处理。该开关不提供对已经完整睡眠主机的网络唤醒。
+
+两端都不在连接或切入时额外请求点亮屏幕，接收端不跟随另一端屏保；可选主动点亮限制为实际远程输入、每个观察到的熄屏周期最多一次。配对指纹、按键与滚轮设置继续保留。
 
 身份、私钥、个人偏好和配对记录在各自用户目录生成，不上传仓库、不随安装包提供。历史版本记录保留；当前源码、说明使用通用名称及示例地址。
