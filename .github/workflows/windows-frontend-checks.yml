@@ -1,0 +1,48 @@
+name: Windows startup and recovery checks
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'source/Windows/**'
+      - 'source/tests/WindowsModel/**'
+      - 'source/tests/FakeCore/**'
+      - 'source/tests/RecoveryIntentTests.cs'
+      - 'source/scripts/collect-windows-diagnostics.cmd'
+      - '.github/workflows/windows-frontend-checks.yml'
+permissions:
+  contents: read
+jobs:
+  frontend:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.401'
+      - name: Validate read-only diagnostic command syntax
+        shell: pwsh
+        run: |
+          $line = (Get-Content source/scripts/collect-windows-diagnostics.cmd)[1]
+          if ($line.Length -gt 8191) { throw 'Command exceeds Windows command-line limit' }
+          $body = $line.Substring($line.IndexOf('"')+1).TrimEnd('"')
+          $tokens=$null; $errors=$null
+          [void][System.Management.Automation.Language.Parser]::ParseInput($body,[ref]$tokens,[ref]$errors)
+          if ($errors.Count) { $errors | Format-List; throw 'Invalid diagnostic PowerShell syntax' }
+      - name: Build test fixture and run actual model lifecycle checks
+        shell: pwsh
+        run: |
+          dotnet build source/tests/FakeCore/FakeCore.csproj -c Release -o fake
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet run --project source/tests/WindowsModel/WindowsModel.csproj -c Release -- "$PWD/fake/deskflow-core.exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Publish independent Windows frontend
+        shell: pwsh
+        run: |
+          dotnet publish source/Windows/LinkDesk.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o frontend
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linkdesk-windows-frontend-x64
+          path: frontend/LinkDesk.exe
+          retention-days: 14

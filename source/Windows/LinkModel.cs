@@ -9,6 +9,7 @@ using System.Linq;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -25,7 +26,10 @@ public sealed class Preferences {
  public bool Server {get;set;}
  public string Layout {get;set;} = "left";
  public bool KeepBackground {get;set;} = true;
- public bool AutoConnect {get;set;}
+ public bool AutoConnect {get;set;}=true;
+ public bool AutoStartOnLaunch {get;set;}
+ public bool LastSessionRequested {get;set;}
+ public bool WakeDisplayOnRemoteInput {get;set;}
  public string MapSuper {get;set;}="super";
  public string MapControl {get;set;}="ctrl";
  public string MapOption {get;set;}="alt";
@@ -39,9 +43,19 @@ public sealed class Preferences {
 public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
  public event PropertyChangedEventHandler? PropertyChanged;
  private void Changed([CallerMemberName] string? key = null) => PropertyChanged?.Invoke(this,new PropertyChangedEventArgs(key));
- private readonly string folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"LinkDesk");
- private readonly string tlsFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"LinkDesk","tls");
- private readonly string engine = Path.Combine(AppContext.BaseDirectory,"core","deskflow-core.exe");
+ private readonly string folder;
+ private readonly string tlsFolder;
+ private readonly string engine;
+ private readonly bool observeSystemEvents;
+ private readonly Func<DesktopSnapshot> desktopState;
+ private readonly TimeSpan recoveryDelay;
+ private readonly RecoveryIntent recovery = new();
+ private CancellationTokenSource? startup;
+ internal Task AutomaticStartTask {get;private set;}=Task.CompletedTask;
+ private TaskCompletionSource<bool>? probe;
+ private string? probeNonce;
+ private string activeConfiguration="";
+ private bool suspended,locked;
  private Preferences preferences;
  private Process? child;
  private NamedPipeClientStream? pipe;
@@ -49,7 +63,6 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
  private bool desired;
  private bool disposed;
  private bool restarting;
- private long recoveryRequest;
  private DiscoveryClient? discovery;
  private DiscoveryResponder? announcement;
  private PeerStore? peers;
@@ -65,7 +78,6 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
  public string ManualFingerprint {get;set;}="";
  public string ManualPlatform {get;set;}="unknown";
  private DateTime lastDiscoverySeen=DateTime.MinValue;
- private int failures;
  private long generation;
  private readonly HashSet<string> seen = new();
  public ObservableCollection<string> Logs {get;} = new();
@@ -77,7 +89,9 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
  public string Role {get=>Server?"共享本机键鼠":"接收另一台电脑的键鼠";}
  public string Layout {get=>preferences.Layout;set{preferences.Layout=value;Changed();}}
  public bool KeepBackground {get=>preferences.KeepBackground;set{preferences.KeepBackground=value;Save();Changed();}}
- public bool AutoConnect {get=>preferences.AutoConnect;set{preferences.AutoConnect=value;Save();Changed();}}
+ public bool AutoConnect {get=>preferences.AutoConnect;set{preferences.AutoConnect=value;if(!value)recovery.Signal();Save();Changed();}}
+ public bool AutoStartOnLaunch {get=>preferences.AutoStartOnLaunch;set{preferences.AutoStartOnLaunch=value;if(!value)CancelAutomaticStart();Save();Changed();}}
+ public bool WakeDisplayOnRemoteInput {get=>preferences.WakeDisplayOnRemoteInput;set{preferences.WakeDisplayOnRemoteInput=value;Save();Changed();}}
  public bool AutoDiscover {get=>preferences.AutoDiscover;set{preferences.AutoDiscover=value;Save();Changed();Changed(nameof(CanManualHost));ConfigureDiscovery();}}
  public bool CanManualHost=>CanEdit&&!Server;
  public string LocalFingerprint {get;private set;}="正在准备本机身份…";
@@ -113,13 +127,17 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
   set {
    try {
     using var key=Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run");
-    if(value) { key.SetValue("LinkDesk","\""+Environment.ProcessPath+"\" --background"); AutoConnect=true; }
-    else key.DeleteValue("LinkDesk",false);
+    if(value) key.SetValue("LinkDesk","\""+Environment.ProcessPath+"\" --background");
+    else {key.DeleteValue("LinkDesk",false);CancelAutomaticStart();}
    } catch(Exception e) { MessageBox.Show("设置未生效："+e.Message,"LinkDesk"); }
    Changed();
   }
  }
- public LinkModel() {
+ public LinkModel() : this(null,null,true,null,null) {}
+ internal LinkModel(string? profile,string? core,bool systemEvents,Func<DesktopSnapshot>? readiness,TimeSpan? delay) {
+  folder=profile??Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"LinkDesk");
+  tlsFolder=Path.Combine(folder,"tls");engine=core??Path.Combine(AppContext.BaseDirectory,"core","deskflow-core.exe");
+  observeSystemEvents=systemEvents;desktopState=readiness??WindowsDesktopState.Read;recoveryDelay=delay??TimeSpan.FromSeconds(10);
   try { preferences=JsonSerializer.Deserialize<Preferences>(File.ReadAllText(Path.Combine(folder,"preferences.json")))??new(); } catch { preferences=new(); }
   try{
    PrepareIdentity();
@@ -127,13 +145,12 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
    peers=new PeerStore(folder);peers.Migrate(PeerName,Host,Server,CurrentInput());ApplySelected(true);RefreshDevices();Save();
   }catch(Exception e){Log("身份或设备列表准备失败："+e.Message);Detail=e.Message;}
   // Keep an existing enabled login item pointing at the executable after an update/move.
-  try{using var key=Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run",true);if(key?.GetValue("LinkDesk") is string)key.SetValue("LinkDesk","\""+Environment.ProcessPath+"\" --background");}catch(Exception e){Log("自启动路径更新失败："+e.Message);}
+  if(observeSystemEvents)try{using var key=Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run",true);if(key?.GetValue("LinkDesk") is string)key.SetValue("LinkDesk","\""+Environment.ProcessPath+"\" --background");}catch(Exception e){Log("自启动路径更新失败："+e.Message);}
   ConfigureDiscovery();
-  NetworkChange.NetworkAddressChanged+=NetworkChanged;
-  SystemEvents.PowerModeChanged+=PowerChanged;
-  if(AutoConnect) _=Task.Delay(1000).ContinueWith(_=>Application.Current.Dispatcher.Invoke(Start));
+  if(observeSystemEvents){NetworkChange.NetworkAddressChanged+=NetworkChanged;SystemEvents.PowerModeChanged+=PowerChanged;SystemEvents.SessionSwitch+=SessionChanged;}
+  Log("启动显示保护已启用；启动应用不会继承旧版自动开启共享的行为。");
  }
- private void PrepareIdentity(){LocalFingerprint=LinkIdentity.Prepare(folder,Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),"Deskflow","tls"));Changed(nameof(LocalFingerprint));}
+ private void PrepareIdentity(){LocalFingerprint=LinkIdentity.Prepare(folder,observeSystemEvents?Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),"Deskflow","tls"):null);Changed(nameof(LocalFingerprint));}
  private PeerInput CurrentInput()=>new(){Command=MapSuper,Control=MapControl,Option=MapOption,Shift=MapShift,InvertVertical=InvertVertical,InvertHorizontal=InvertHorizontal,VerticalSpeed=VerticalSpeed,HorizontalSpeed=HorizontalSpeed};
  private void ApplySelected(bool restoreInput) {
   var peer=SelectedDevice;if(peer is null)return;PeerName=peer.Name;Host=peer.Address;
@@ -170,38 +187,97 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
      var oldName=SelectedDevice?.Name;var oldAddress=SelectedDevice?.Address;
      bool selected=peers.Observe(incoming);RefreshDevices();
      if(selected){bool returned=(DateTime.UtcNow-lastDiscoverySeen).TotalSeconds>12;lastDiscoverySeen=DateTime.UtcNow;ApplySelected(false);Save();
-      if(oldName!=incoming.Name||oldAddress!=incoming.Address||returned)RequestRecovery("已核对所选设备的身份",oldName!=incoming.Name||(!Server&&oldAddress!=incoming.Address));
+      if(oldName!=incoming.Name||oldAddress!=incoming.Address||returned)RequestRecovery("已核对所选设备的身份");
      }
     }catch(Exception e){Log("设备列表："+e.Message);}
    }),message=>Application.Current.Dispatcher.BeginInvoke(()=>{if(!disposed&&revision==discoveryGeneration){DiscoveryStatus=message;RefreshDevices();}}));
  }
- private void NetworkChanged(object? sender,EventArgs e)=>Application.Current.Dispatcher.BeginInvoke(()=>{if(!disposed){Changed(nameof(Address));discovery?.Refresh();RequestRecovery("网络恢复或地址变化");}});
- private void PowerChanged(object sender,PowerModeChangedEventArgs e){if(e.Mode==PowerModes.Resume)Application.Current.Dispatcher.BeginInvoke(()=>{if(!disposed){discovery?.Refresh();RequestRecovery("电脑唤醒",true);}});}
- private async void RequestRecovery(string reason,bool force=false) {
-  if(disposed||!AutoConnect)return;
-  var request=++recoveryRequest;
-  await Task.Delay(3000);
-  if(disposed||!AutoConnect||request!=recoveryRequest||restarting||(!force&&Connected))return;
-  if(!NetworkInterface.GetAllNetworkInterfaces().Any(n=>n.OperationalStatus==OperationalStatus.Up&&n.NetworkInterfaceType!=NetworkInterfaceType.Loopback))return;
-  Log(reason+"，正在恢复共享。");
-  if(!Running){Start();return;}
-  restarting=true;desired=true;var id=++generation;var owned=child;
-  Status="正在恢复共享";Connected=false;SendStop();session?.Cancel();pipe?.Dispose();pipe=null;
+ public void BeginAutomaticStart() {
+  CancelAutomaticStart();
+  if(disposed||!AutoStartOnLaunch||!preferences.LastSessionRequested||Running)return;
+  startup=new CancellationTokenSource();AutomaticStartTask=AutomaticStart(startup.Token);
+ }
+ private async Task AutomaticStart(CancellationToken token) {
   try {
-   if(owned is not null&&!owned.HasExited){
-    var exit=owned.WaitForExitAsync();
-    if(await Task.WhenAny(exit,Task.Delay(2000))!=exit&&!owned.HasExited)owned.Kill();
-    if(await Task.WhenAny(exit,Task.Delay(2000))!=exit)throw new Exception("旧共享进程尚未退出");
+   Status="等待桌面准备就绪";Detail="本机屏幕稳定后再恢复共享；停止可取消。";
+   // The explicit opt-in is separate from login startup and old AutoConnect.
+   await Task.Delay(TimeSpan.FromSeconds(15),token);
+   var stable=new DesktopStability();
+   while(!disposed&&!token.IsCancellationRequested&&AutoStartOnLaunch&&preferences.LastSessionRequested) {
+    if(!suspended&&!locked&&stable.Observe(ReadDesktop(),DateTimeOffset.UtcNow,TimeSpan.FromSeconds(5))) {
+     Log("已确认默认用户桌面与物理显示路径稳定，执行已明确启用的自动共享。");Start();return;
+    }
+    await Task.Delay(1000,token);
    }
-   if(owned is not null)owned.Dispose();
-   child=null;Running=false;restarting=false;
-   if(!disposed&&AutoConnect&&generation==id){WriteConfiguration();Launch();}
-  }catch(Exception e){restarting=false;try{Running=child is not null&&!child.HasExited;}catch{Running=false;}Status="恢复暂未完成";Detail=e.Message;}
+  }catch(OperationCanceledException){}
+ }
+ private DesktopSnapshot ReadDesktop(){try{return desktopState();}catch{return new(false,"");}}
+ private void CancelAutomaticStart(){startup?.Cancel();startup?.Dispose();startup=null;}
+ private void NetworkChanged(object? sender,EventArgs e)=>Application.Current.Dispatcher.BeginInvoke(NetworkSignal);
+ internal void NetworkSignal(){if(disposed)return;Changed(nameof(Address));discovery?.Refresh();RequestRecovery("网络变化");}
+ private void PowerChanged(object sender,PowerModeChangedEventArgs e)=>Application.Current.Dispatcher.BeginInvoke(()=>{
+  if(disposed)return;
+  if(e.Mode==PowerModes.Suspend){suspended=true;recovery.Pause(true);CancelAutomaticStart();Log("系统挂起，已取消排队恢复；保留已有核心。");}
+  else if(e.Mode==PowerModes.Resume)ResumeSignal();
+ });
+ internal void ResumeSignal(){if(disposed)return;suspended=false;recovery.Pause(locked);discovery?.Refresh();Log("系统恢复：仅检查现有核心，不强制重启。");if(desired)RequestRecovery("电脑唤醒");else BeginAutomaticStart();}
+ private void SessionChanged(object sender,SessionSwitchEventArgs e)=>Application.Current.Dispatcher.BeginInvoke(()=>{
+  if(disposed)return;
+  if(e.Reason==SessionSwitchReason.SessionLock){locked=true;recovery.Pause(true);CancelAutomaticStart();Log("会话锁定，已暂停排队启动与恢复。");}
+  else if(e.Reason==SessionSwitchReason.SessionUnlock){locked=false;recovery.Pause(suspended);if(desired)RequestRecovery("会话解锁");else BeginAutomaticStart();}
+ });
+ private async Task<bool> ProbeCore() {
+  if(pipe?.IsConnected!=true)return false;
+  var nonce=Guid.NewGuid().ToString("N");var pending=new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);probeNonce=nonce;probe=pending;
+  try {var bytes=Encoding.UTF8.GetBytes("ping="+nonce+"\n");await pipe.WriteAsync(bytes);await pipe.FlushAsync();return await pending.Task.WaitAsync(TimeSpan.FromSeconds(3));}
+  catch{return false;}
+  finally{if(probe==pending){probe=null;probeNonce=null;}}
+ }
+ private async void RequestRecovery(string reason) {
+  if(disposed||!desired||!AutoConnect||recovery.Paused||recovery.Blocked)return;
+  var request=recovery.Signal();
+  await Task.Delay(recoveryDelay);
+  if(disposed||!desired||!recovery.Current(request,AutoConnect)||restarting)return;
+  bool online=NetworkInterface.GetAllNetworkInterfaces().Any(n=>n.OperationalStatus==OperationalStatus.Up&&n.NetworkInterfaceType!=NetworkInterfaceType.Loopback);
+  if(!online||!ReadDesktop().Ready){Log(reason+"：网络或桌面尚未就绪，暂不变更核心。");return;}
+  restarting=true;
+  try {
+   bool responsive=!Running||await ProbeCore();
+   if(disposed||!desired||!recovery.Current(request,AutoConnect))return;
+   bool changed=Running&&DesiredConfiguration()!=activeConfiguration;
+   var action=recovery.Decide(request,AutoConnect,true,online,Running,responsive,changed);
+   Log(reason+"：恢复检查="+action+"，进程="+(child?.Id.ToString()??"none"));
+   if(action==RecoveryAction.Keep){return;}
+   if(action==RecoveryAction.Hold){recovery.Block();Status="共享核心暂未响应";Detail="保留现场，不自动反复重启。请查看连接日志后手动停止并重试。";return;}
+   if(action==RecoveryAction.Start){Start();return;}
+   if(action!=RecoveryAction.Reload)return;
+   var owned=child;var id=++generation;Connected=false;SendStop();session?.Cancel();pipe?.Dispose();pipe=null;
+   if(owned is not null&&!owned.HasExited) {
+    var exit=owned.WaitForExitAsync();
+    if(await Task.WhenAny(exit,Task.Delay(5000))!=exit){recovery.Block();Status="等待旧共享进程退出";Detail="自动恢复已暂停，避免强制终止后反复启动。";return;}
+   }
+   owned?.Dispose();child=null;Running=false;
+   if(!disposed&&desired&&recovery.Current(request,AutoConnect)&&generation==id){WriteConfiguration();Launch();}
+  }catch(Exception e){recovery.Block();Status="自动恢复已暂停";Detail=e.Message;Log("恢复检查失败："+e.Message);}
+  finally{restarting=false;}
  }
  public void Save() { try {peers?.SetInput(CurrentInput());Directory.CreateDirectory(folder);File.WriteAllText(Path.Combine(folder,"preferences.json"),JsonSerializer.Serialize(preferences,new JsonSerializerOptions{WriteIndented=true}));ConfigureDiscovery();}catch(Exception e){MessageBox.Show("保存失败："+e.Message,"LinkDesk");} }
- private void Log(string line) {Logs.Add(line);while(Logs.Count>300)Logs.RemoveAt(0);}
+ private void Log(string line) {
+  var entry=DateTimeOffset.Now.ToString("yyyy-MM-ddTHH:mm:ss.fffzzz")+" "+line;Logs.Add(entry);while(Logs.Count>300)Logs.RemoveAt(0);
+  try{Directory.CreateDirectory(folder);var file=Path.Combine(folder,"linkdesk-session.log");if(File.Exists(file)&&new FileInfo(file).Length>2097152){File.Copy(file,file+".1",true);File.Delete(file);}File.AppendAllText(file,entry+Environment.NewLine);}catch{}
+ }
+ private void VerifyProtectedCore(){
+  var file=Path.Combine(Path.GetDirectoryName(engine)!,"linkdesk-core.json");
+  using var metadata=JsonDocument.Parse(File.ReadAllText(file));
+  if(metadata.RootElement.GetProperty("displaySafetyVersion").GetInt32()!=1)throw new InvalidOperationException("显示保护核心版本不匹配");
+  using var stream=File.OpenRead(engine);var hash=Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
+  if(metadata.RootElement.GetProperty("sha256").GetString()!=hash)throw new InvalidOperationException("显示保护核心校验失败，请重新解压完整安装包。");
+ }
+ private string DesiredConfiguration()=>string.Join("|",Server,LocalName,PeerName,Server?"":Host,Layout,MapSuper,MapControl,MapOption,MapShift,InvertVertical,InvertHorizontal,VerticalSpeed,HorizontalSpeed,WakeDisplayOnRemoteInput,SelectedDevice?.Fingerprint);
+
  private static bool Name(string s)=>Regex.IsMatch(s,@"^[A-Za-z0-9][A-Za-z0-9_.-]{0,254}$");
  public void Start() {
+  CancelAutomaticStart();
   if(disposed)return;
   if(Running)return;
   if(!File.Exists(engine)){MessageBox.Show("安装包中的连接核心不完整。请重新解压整个 LinkDesk 安装包，不要只复制 LinkDesk.exe。","LinkDesk");return;}
@@ -212,8 +288,8 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
   if(!Server&&!Regex.IsMatch(Host,@"^[A-Za-z0-9_.:\[\]-]{1,255}$")){MessageBox.Show("请输入有效的共享端地址。","LinkDesk");return;}
   if(!File.Exists(Path.Combine(Path.GetDirectoryName(engine)!,"settings","Deskflow.conf"))){MessageBox.Show("连接核心的便携配置缺失，请重新解压完整安装包。","LinkDesk");return;}
   try {
-   PrepareIdentity();ConfigureDiscovery();WriteConfiguration();
-   AutoConnect=true;Save();desired=true;failures=0;Launch();
+   VerifyProtectedCore();PrepareIdentity();ConfigureDiscovery();WriteConfiguration();
+   preferences.LastSessionRequested=true;Save();desired=true;recovery.StartSession();recovery.Pause(suspended||locked);Log("用户授权启动共享；用途="+(Server?"共享":"接收"));Launch();
   }catch(Exception e){MessageBox.Show("无法启动："+e.Message,"LinkDesk");}
  }
  private void WriteConfiguration() {
@@ -224,7 +300,8 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
    var reverse=new Dictionary<string,string>{{"right","left"},{"left","right"},{"up","down"},{"down","up"}};
    var dir=reverse.ContainsKey(Layout)?Layout:"left";
    File.WriteAllText(config,$"section: links\n\t{LocalName}:\n\t\t{dir} = {PeerName}\n\t{PeerName}:\n\t\t{reverse[dir]} = {LocalName}\nend\n\nsection: options\nend\n");
-   File.WriteAllText(Path.Combine(activeProfile,"LinkDesk.conf"),$"[core]\ncomputerName={LocalName}\ncoreMode={(Server?2:1)}\nprocessMode=0\nport=24800\n[computer_{LocalName}]\nname={LocalName}\n[computer_{PeerName}]\nname={PeerName}\n{(Server?mapping:"")}[client]\nremoteHost={Host}\nlanguageSync=false\ndynamicConnectionInterval=true\n{scrolling}[server]\nexternalConfig=true\nexternalConfigFile={config.Replace('\\','/')}\nprotocol=barrier\nenableClipboard=true\nclipboardSize=3\n[security]\ntlsEnabled=true\ncheckPeerFingerprints=true\n[log]\nlevel=Info\n");
+   File.WriteAllText(Path.Combine(activeProfile,"LinkDesk.conf"),$"[core]\ncomputerName={LocalName}\ncoreMode={(Server?2:1)}\nprocessMode=0\nport=24800\npreventSleep=false\nwindowsScreenSaverSync=false\nwindowsWakeDisplayOnRemoteInput={WakeDisplayOnRemoteInput.ToString().ToLowerInvariant()}\n[computer_{LocalName}]\nname={LocalName}\n[computer_{PeerName}]\nname={PeerName}\n{(Server?mapping:"")}[client]\nremoteHost={Host}\nlanguageSync=false\ndynamicConnectionInterval=true\n{scrolling}[server]\nexternalConfig=true\nexternalConfigFile={config.Replace('\\','/')}\nprotocol=barrier\nenableClipboard=true\nclipboardSize=3\n[security]\ntlsEnabled=true\ncheckPeerFingerprints=true\n[log]\nlevel=Info\ntoFile=true\nfile={Path.Combine(activeProfile,"linkdesk-core.log").Replace('\\','/')}\n");
+   activeConfiguration=DesiredConfiguration();
  }
  private void Launch() {
   if(disposed||!desired)return;
@@ -235,13 +312,12 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
   p.StartInfo.ArgumentList.Add(Server?"server":"client");p.StartInfo.ArgumentList.Add("--new-instance");p.StartInfo.ArgumentList.Add("--settings");p.StartInfo.ArgumentList.Add(Path.Combine(activeProfile,"LinkDesk.conf"));
   void Line(object sender,DataReceivedEventArgs e){if(e.Data is null)return;Application.Current.Dispatcher.BeginInvoke(()=>{if(id!=generation)return;Log(e.Data);if(e.Data.Contains("FATAL")||e.Data.Contains("ERROR"))Detail="启动遇到问题，请查看连接日志。";});}
   p.OutputDataReceived+=Line;p.ErrorDataReceived+=Line;
-  p.Exited+=(_,_)=>Application.Current.Dispatcher.BeginInvoke(async()=>{
-   if(id!=generation)return;
+  p.Exited+=(_,_)=>Application.Current.Dispatcher.BeginInvoke(()=>{
+   if(disposed||id!=generation)return;
    int exit=p.ExitCode;Running=false;Connected=false;pipe?.Dispose();pipe=null;session?.Cancel();
-   if(desired&&exit!=0&&++failures<=3){Status="启动失败，稍后重试";Detail="检查权限和另一台电脑的设置。";await Task.Delay(failures*5000);if(desired&&id==generation)Launch();}
-   else {desired=false;Status=exit==0?"已停止":"启动失败";Detail=exit==0?"点击启动，恢复键鼠共享。":"已停止重试，请查看日志后重新启动。";}
+   Log("核心退出：pid="+p.Id+" exit="+exit+"；不自动反复拉起进程。");desired=false;recovery.Block();preferences.LastSessionRequested=false;Save();Status=exit==0?"已停止":"共享核心意外停止";Detail="请查看连接日志；确认后手动启动，不自动反复重试。";
   });
-  try {p.Start();child=p;Running=true;Status=Server?"等待所选设备":"正在连接所选设备";Detail="保持两台电脑联网，连接会自动恢复。";Changed(nameof(Address));p.BeginOutputReadLine();p.BeginErrorReadLine();_=ReadChannel(id,session.Token);}
+  try {p.Start();child=p;Log("核心启动：pid="+p.Id+" generation="+id+" 用途="+(Server?"共享":"接收"));Running=true;Status=Server?"等待所选设备":"正在连接所选设备";Detail="保持两台电脑联网，连接会自动恢复。";Changed(nameof(Address));p.BeginOutputReadLine();p.BeginErrorReadLine();_=ReadChannel(id,session.Token);}
   catch(Exception e){desired=false;MessageBox.Show(e.Message,"LinkDesk");}
  }
  private async Task ReadChannel(long id,CancellationToken token) {
@@ -259,6 +335,7 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
  private void Handle(string message) {
   var parts=message.Split('=',2);var args=parts.Length>1?parts[1]:"";
   switch(parts[0]){
+   case "pong":if(args==probeNonce)probe?.TrySetResult(true);break;
    case "connectionState":Connected=args=="Connected";Status=Connected?"两台电脑已连接":Server?"等待所选设备":"正在重连所选设备";Detail=Connected?"键盘和鼠标可以在两台电脑间使用。":"网络恢复后会自动重连。";break;
    case "connectedClients":Connected=args.Length>0;Status=Connected?"两台电脑已连接":"等待另一台电脑";Detail=Connected?"已连接："+args:"等待安全连接。";break;
    case "connectionRefused":Detail="对方拒绝连接："+args;break;
@@ -268,7 +345,13 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
   }
  }
  public void Toggle()=> (Running? (Action)Stop:Start)();
- public void Stop(){desired=false;AutoConnect=false;recoveryRequest++;Connected=false;var p=child;if(p is null||p.HasExited){Running=false;Status="已停止";return;}SendStop();_=Task.Delay(1000).ContinueWith(_=>{try{if(!p.HasExited)p.Kill();}catch{}Application.Current.Dispatcher.BeginInvoke(()=>{if(child==p&&!AutoConnect){Running=false;Status="已停止";}});});Status="正在停止";}
+ public void Stop(){
+  CancelAutomaticStart();desired=false;recovery.StopSession();preferences.LastSessionRequested=false;Save();Connected=false;probe?.TrySetResult(false);
+  var p=child;if(p is null||p.HasExited){Running=false;Status="已停止";return;}
+  Log("用户请求停止核心：pid="+p.Id);SendStop();
+  _=Task.Delay(5000).ContinueWith(_=>{try{if(!p.HasExited){LogOnDispatcher("用户停止超时，终止本应用持有的核心：pid="+p.Id);p.Kill();}}catch{}Application.Current.Dispatcher.BeginInvoke(()=>{if(child==p&&!desired){Running=false;Status="已停止";}});});Status="正在停止";
+ }
+ private void LogOnDispatcher(string line)=>Application.Current.Dispatcher.BeginInvoke(()=>Log(line));
  private void SendStop(){try{if(pipe?.IsConnected==true){var bytes=Encoding.UTF8.GetBytes("stop\n");pipe.Write(bytes);pipe.Flush();}}catch{}}
- public void Dispose(){if(disposed)return;disposed=true;desired=false;recoveryRequest++;discoveryGeneration++;discovery?.Dispose();announcement?.Dispose();NetworkChange.NetworkAddressChanged-=NetworkChanged;SystemEvents.PowerModeChanged-=PowerChanged;SendStop();try{if(child is not null&&!child.HasExited&&!child.WaitForExit(2000))child.Kill();}catch{}session?.Cancel();pipe?.Dispose();child?.Dispose();}
+ public void Dispose(){if(disposed)return;CancelAutomaticStart();disposed=true;desired=false;recovery.StopSession();generation++;discoveryGeneration++;discovery?.Dispose();announcement?.Dispose();if(observeSystemEvents){NetworkChange.NetworkAddressChanged-=NetworkChanged;SystemEvents.PowerModeChanged-=PowerChanged;SystemEvents.SessionSwitch-=SessionChanged;}probe?.TrySetResult(false);SendStop();try{if(child is not null&&!child.HasExited&&!child.WaitForExit(5000))child.Kill();}catch{}session?.Cancel();pipe?.Dispose();child?.Dispose();}
 }

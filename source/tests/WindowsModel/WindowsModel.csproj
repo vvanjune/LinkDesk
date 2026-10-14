@@ -1,0 +1,4 @@
+<Project Sdk="Microsoft.NET.Sdk">
+<PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0-windows</TargetFramework><UseWPF>true</UseWPF><Nullable>enable</Nullable><ImplicitUsings>disable</ImplicitUsings><EnableDefaultCompileItems>false</EnableDefaultCompileItems><EnableWindowsTargeting>true</EnableWindowsTargeting></PropertyGroup>
+<ItemGroup><Compile Include="Program.cs"/><Compile Include="../../Windows/LinkModel.cs"/><Compile Include="../../Windows/RecoveryIntent.cs"/><Compile Include="../../Windows/WindowsDesktopState.cs"/><Compile Include="../../Windows/Identity.cs"/><Compile Include="../../Windows/Peers.cs"/><Compile Include="../../Windows/Discovery.cs"/><Compile Include="../../Windows/InputConfiguration.cs"/></ItemGroup>
+</Project>
