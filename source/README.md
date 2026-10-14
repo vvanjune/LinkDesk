@@ -1,4 +1,6 @@
-# LinkDesk 0.4.0
+# LinkDesk 0.4.x
+
+macOS 0.4.0; Windows 0.4.1. The Windows patch refreshes its signed discovery announcement when starting after an unsaved role/name change.
 
 GPL-2.0-only. Native SwiftUI/AppKit on macOS 13+ Apple Silicon; WPF on Windows x64 with self-contained .NET 10. Packages embed the unmodified Deskflow 1.27.0 core and required runtime files. Users do not install Deskflow or .NET separately.
 

@@ -210,7 +210,7 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
   if(!Server&&!Regex.IsMatch(Host,@"^[A-Za-z0-9_.:\[\]-]{1,255}$")){MessageBox.Show("请输入有效的共享端地址。","LinkDesk");return;}
   if(!File.Exists(Path.Combine(Path.GetDirectoryName(engine)!,"settings","Deskflow.conf"))){MessageBox.Show("连接核心的便携配置缺失，请重新解压完整安装包。","LinkDesk");return;}
   try {
-   PrepareIdentity();WriteConfiguration();
+   PrepareIdentity();ConfigureDiscovery();WriteConfiguration();
    AutoConnect=true;Save();desired=true;failures=0;Launch();
   }catch(Exception e){MessageBox.Show("无法启动："+e.Message,"LinkDesk");}
  }
