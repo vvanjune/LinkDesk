@@ -1,0 +1,63 @@
+name: Publish verified Windows 0.4.3 package
+on:
+  workflow_dispatch:
+    inputs:
+      package_run:
+        description: Successful package workflow run ID
+        required: true
+permissions:
+  contents: read
+  actions: read
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify and publish package with source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACKAGE_RUN: ${{ inputs.package_run }}
+        run: |
+          set -eu
+          case "$PACKAGE_RUN" in ''|*[!0-9]*) exit 1;; esac
+          gh run view "$PACKAGE_RUN" --repo "$GITHUB_REPOSITORY" --json conclusion,name,headSha > run.json
+          python3 - <<'PY'
+          import json
+          run=json.load(open('run.json'))
+          assert run['conclusion']=='success' and run['name']=='Package verified Windows display-safety build'
+          PY
+          gh run download "$PACKAGE_RUN" --repo "$GITHUB_REPOSITORY" -n LinkDesk-Windows-0.4.3 -D package
+          cd package
+          sha256sum -c SHA256SUMS.txt
+          cd ..
+          python3 - <<'PY'
+          import json,subprocess,zipfile
+          with zipfile.ZipFile('package/LinkDesk-Windows-0.4.3.zip') as z:
+              metadata=json.loads(z.read('build-inputs.json').decode('utf-8-sig'))
+          assert metadata['version']=='0.4.3'
+          subprocess.run(['git','fetch','origin',metadata['sourceCommit']],check=True)
+          subprocess.run(['git','diff','--exit-code',metadata['sourceCommit'],'HEAD','--','source/Windows','source/core-patches','source/scripts/bundle-runtime.py'],check=True)
+          PY
+          git archive --format=zip HEAD -o package/LinkDesk-source-0.4.3.zip
+          cd package
+          sha256sum LinkDesk-Windows-0.4.3.zip LinkDesk-source-0.4.3.zip > SHA256SUMS.txt
+          cd ..
+          cat > notes.md <<'NOTES'
+          Windows display-protection update. macOS 0.4.2 is unchanged and remains compatible.
+
+          - Login startup and automatic sharing are separate. Upgrades default automatic sharing and explicit remote display wake to off. Opted-in sharing waits for a stable physical desktop; background login remains tray-only.
+          - The patched Windows core removes display wake on connection/enter, defaults receiver screen-saver synchronization to off, and restricts optional explicit wake to actual remote input once per observed off cycle.
+          - Wake/network recovery retains a responsive core, coalesces network changes, respects manual stop and pauses on an unresponsive/crashed core.
+          - Includes local-only diagnostics, core integrity metadata, required runtimes and license notices. No Deskflow or .NET installation required.
+
+          Native wake-policy tests, actual WPF model lifecycle tests, patched-core runtime checks and complete package checks passed in Windows CI. These checks do not establish that a GPU/driver black-screen fault is fully resolved; physical cold boot, screen-off/wake, sleep and network tests remain pending. No driver changes are made by this build.
+
+          Extract the full Windows ZIP, quit the old tray app, and launch LinkDesk.exe. Keep core/ and ThirdParty/. First verify manual sharing; automatic sharing and explicit display wake remain off by default.
+
+          Corresponding LinkDesk source and the core patch/build workflows are included in the source ZIP. Unchanged complete upstream sources and runtime notices are available in the v0.4.0 release: https://github.com/vvanjune/LinkDesk/releases/tag/v0.4.0. Pinned Deskflow source: https://github.com/deskflow/deskflow/tree/90376dfaba2c28dd61c5d4453ae5641c6edec5a3.
+          NOTES
+          gh release create v0.4.3 --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --title 'LinkDesk 0.4.3 — Windows display protection' --notes-file notes.md package/LinkDesk-Windows-0.4.3.zip package/LinkDesk-source-0.4.3.zip package/SHA256SUMS.txt

@@ -41,6 +41,26 @@ jobs:
         run: |
           dotnet publish source/Windows/LinkDesk.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o frontend
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify background login does not show a window or start sharing
+        shell: pwsh
+        run: |
+          $profile=Join-Path $env:RUNNER_TEMP ('LinkDeskSmoke-'+[guid]::NewGuid().ToString('N'))
+          New-Item $profile -ItemType Directory | Out-Null
+          $start=[System.Diagnostics.ProcessStartInfo]::new((Join-Path $PWD 'frontend/LinkDesk.exe'))
+          $start.UseShellExecute=$false
+          $start.ArgumentList.Add('--background')
+          $start.Environment['LOCALAPPDATA']=$profile
+          $process=[System.Diagnostics.Process]::Start($start)
+          try {
+            Start-Sleep -Seconds 5
+            $process.Refresh()
+            if ($process.HasExited -or $process.MainWindowHandle -ne 0) { throw 'Tray-only login failed' }
+            if (Get-Process -Name deskflow-core -ErrorAction SilentlyContinue) { throw 'Login started an unauthorized core' }
+            $preferences=Get-Content (Join-Path $profile 'LinkDesk/preferences.json') -Raw | ConvertFrom-Json
+            if ($preferences.AutoStartOnLaunch -or $preferences.WakeDisplayOnRemoteInput) { throw 'Unsafe upgrade defaults' }
+          } finally {
+            if (!$process.HasExited) { $process.Kill(); $process.WaitForExit() }
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: linkdesk-windows-frontend-x64
