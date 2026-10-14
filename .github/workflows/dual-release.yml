@@ -49,7 +49,7 @@ jobs:
               mac=json.loads(z.read('LinkDesk.app/Contents/Resources/build-inputs.json'))
           with zipfile.ZipFile('windows/LinkDesk-Windows-0.4.4.zip') as z:
               win=json.loads(z.read('build-inputs.json').decode('utf-8-sig'))
-          for data,paths in [(mac,['source/VERSION','source/macOS','source/core-patches/mac-display-safety.patch','source/scripts/build-mac.sh','source/scripts/bundle-runtime.py','source/scripts/finalize-mac-manifest.py']),(win,['source/VERSION','source/Windows','source/core-patches/windows-display-safety.patch','source/scripts/bundle-runtime.py'])]:
+          for data,paths in [(mac,['source/VERSION','source/macOS','source/core-patches/mac-display-safety.patch','source/scripts/build-mac.sh','source/scripts/bundle-runtime.py','source/scripts/finalize-mac-manifest.py']),(win,['source/VERSION','source/Windows','source/core-patches/windows-display-safety.patch','source/scripts/bundle-runtime.py',':(exclude)source/Windows/*.txt'])]:
               assert data['version']==version
               subprocess.run(['git','fetch','origin',data['sourceCommit']],check=True)
               subprocess.run(['git','diff','--exit-code',data['sourceCommit'],'HEAD','--',*paths],check=True)

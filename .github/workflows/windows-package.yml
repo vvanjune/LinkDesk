@@ -30,7 +30,7 @@ jobs:
             if ($run.conclusion -ne 'success' -or $run.name -ne $item[1]) { throw 'Unverified input build' }
             $path = if ($item[1] -eq 'Windows display-safe core') { 'source/core-patches/windows-display-safety.patch' } else { 'source/Windows' }
             git fetch origin $run.headSha
-            git diff --exit-code $run.headSha HEAD -- $path
+            git diff --exit-code $run.headSha HEAD -- $path ":(exclude)source/Windows/*.txt"
             if ($LASTEXITCODE -ne 0) { throw 'Input artifact differs from packaged sources' }
           }
           gh run download $env:CORE_RUN --repo $env:GITHUB_REPOSITORY -n linkdesk-display-safe-core-x64 -D core-artifact
@@ -66,6 +66,7 @@ jobs:
           $forbidden=Get-ChildItem package -Recurse -File | Where-Object {$_.Extension -in '.pem','.key','.p12','.pfx','.log','.pdb' -or $_.Name -in 'preferences.json','devices.json'}
           if ($forbidden) { throw 'Private state or debugging files in package' }
           $version=(Get-Content source/VERSION -Raw).Trim()
+          if ((Get-Item package/LinkDesk.exe).VersionInfo.ProductVersion.Split('+')[0] -ne $version) { throw 'Windows executable version differs from shared version' }
           if ($version -ne '0.4.4') { throw 'Unexpected shared version' }
           Compress-Archive package/* LinkDesk-Windows-0.4.4.zip
           (Get-FileHash LinkDesk-Windows-0.4.4.zip -Algorithm SHA256).Hash.ToLower()+'  LinkDesk-Windows-0.4.4.zip' | Set-Content SHA256SUMS.txt

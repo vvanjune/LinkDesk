@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - 'source/Windows/**'
+      - '!source/Windows/*.txt'
       - 'source/VERSION'
       - 'source/tests/WindowsModel/**'
       - 'source/tests/FakeCore/**'

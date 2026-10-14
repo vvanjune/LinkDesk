@@ -43,7 +43,7 @@ jobs:
           curl -L --fail https://github.com/deskflow/deskflow/releases/download/v1.27.0/deskflow-1.27.0-macos-arm64.dmg -o official.dmg
           echo 'dd21e79e566314394214906d3338c505d337af536fc580c022ee3fadffad0c97  official.dmg' | shasum -a 256 -c -
           mkdir -p "$RUNNER_TEMP/deskflow-runtime"
-          hdiutil attach official.dmg -nobrowse -readonly -mountpoint "$RUNNER_TEMP/deskflow-runtime"
+          printf 'y\n' | hdiutil attach official.dmg -nobrowse -readonly -mountpoint "$RUNNER_TEMP/deskflow-runtime"
           export LINKDESK_DESKFLOW_APP="$RUNNER_TEMP/deskflow-runtime/Deskflow.app"
           export LINKDESK_PATCHED_MAC_CORE="$PWD/artifact/build/bin/deskflow-core"
           sh source/scripts/build-mac.sh "$PWD/package"
