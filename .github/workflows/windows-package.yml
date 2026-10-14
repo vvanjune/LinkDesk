@@ -1,0 +1,76 @@
+name: Package verified Windows display-safety build
+on:
+  workflow_dispatch:
+    inputs:
+      core_run:
+        description: Successful display-safe core workflow run ID
+        required: true
+      frontend_run:
+        description: Successful startup/recovery checks workflow run ID
+        required: true
+permissions:
+  contents: read
+  actions: read
+jobs:
+  package:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify successful runs correspond to packaged sources
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CORE_RUN: ${{ inputs.core_run }}
+          FRONT_RUN: ${{ inputs.frontend_run }}
+        run: |
+          foreach ($item in @(@($env:CORE_RUN,'Windows display-safe core'),@($env:FRONT_RUN,'Windows startup and recovery checks'))) {
+            if ($item[0] -notmatch '^\d+$') { throw 'Invalid workflow ID' }
+            $run = gh run view $item[0] --repo $env:GITHUB_REPOSITORY --json conclusion,name,headSha | ConvertFrom-Json
+            if ($run.conclusion -ne 'success' -or $run.name -ne $item[1]) { throw 'Unverified input build' }
+            $path = if ($item[1] -eq 'Windows display-safe core') { 'source/core-patches/windows-display-safety.patch' } else { 'source/Windows' }
+            git fetch origin $run.headSha
+            git diff --exit-code $run.headSha HEAD -- $path
+            if ($LASTEXITCODE -ne 0) { throw 'Input artifact differs from packaged sources' }
+          }
+          gh run download $env:CORE_RUN --repo $env:GITHUB_REPOSITORY -n linkdesk-display-safe-core-x64 -D core-artifact
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          gh run download $env:FRONT_RUN --repo $env:GITHUB_REPOSITORY -n linkdesk-windows-frontend-x64 -D frontend-artifact
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Assemble and validate independent package
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://github.com/deskflow/deskflow/releases/download/v1.27.0/deskflow-1.27.0-win-x64-portable.zip -OutFile official.zip
+          if ((Get-FileHash official.zip -Algorithm SHA256).Hash.ToLower() -ne '8d19004cc3625623489d96580c1b58fd13ee78185689907fd4478595f93fab9a') { throw 'Upstream checksum mismatch' }
+          Expand-Archive official.zip official
+          $original = (Get-ChildItem official -Recurse -Filter deskflow-core.exe | Select-Object -First 1).DirectoryName
+          $patched = (Get-ChildItem core-artifact -Recurse -Filter deskflow-core.exe | Select-Object -First 1).FullName
+          New-Item package -ItemType Directory
+          Copy-Item frontend-artifact/LinkDesk.exe package/LinkDesk.exe
+          python source/scripts/bundle-runtime.py windows $original package --patched-windows-core $patched
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item source/scripts/collect-windows-diagnostics.cmd package/Collect-LinkDesk-Diagnostics.cmd
+          Copy-Item source/Windows/升级说明.txt package/升级说明.txt
+          Copy-Item source/LICENSE package/LICENSE
+          Copy-Item source/README.md package/BUILD-AND-VALIDATION.md
+          Copy-Item source/core-patches/windows-display-safety.patch package/ThirdParty/windows-display-safety.patch
+          $manifest = Get-Content package/core/linkdesk-core.json -Raw | ConvertFrom-Json
+          if ($manifest.sha256 -ne (Get-FileHash package/core/deskflow-core.exe -Algorithm SHA256).Hash.ToLower()) { throw 'Core integrity mismatch' }
+          $inputs=@{coreRun='${{ inputs.core_run }}';frontendRun='${{ inputs.frontend_run }}';sourceCommit=$env:GITHUB_SHA;version='0.4.3'}
+          $inputs | ConvertTo-Json | Set-Content package/build-inputs.json
+          Push-Location package/core
+          ./deskflow-core.exe --version
+          $result=$LASTEXITCODE
+          Pop-Location
+          if ($result -ne 0) { throw 'Packaged core failed runtime validation' }
+          $forbidden=Get-ChildItem package -Recurse -File | Where-Object {$_.Extension -in '.pem','.key','.p12','.pfx','.log','.pdb' -or $_.Name -in 'preferences.json','devices.json'}
+          if ($forbidden) { throw 'Private state or debugging files in package' }
+          Compress-Archive package/* LinkDesk-Windows-0.4.3.zip
+          (Get-FileHash LinkDesk-Windows-0.4.3.zip -Algorithm SHA256).Hash.ToLower()+'  LinkDesk-Windows-0.4.3.zip' | Set-Content SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LinkDesk-Windows-0.4.3
+          path: |
+            LinkDesk-Windows-0.4.3.zip
+            SHA256SUMS.txt
+          retention-days: 14
