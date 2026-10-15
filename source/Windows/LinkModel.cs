@@ -274,7 +274,9 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
  }
  public async void SaveAndApply() {
   Save();
-  if(disposed||!Running||!desired||restarting)return;
+  // A concurrent health check must not silently discard an explicit settings save.
+  while(!disposed&&Running&&desired&&restarting)await Task.Delay(50);
+  if(disposed||!Running||!desired)return;
   if(DesiredConfiguration()==activeConfiguration)return;
   restarting=true;
   try{await ReloadCore("设置更改");}
