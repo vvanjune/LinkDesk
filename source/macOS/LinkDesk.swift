@@ -122,6 +122,7 @@ final class LinkModel: ObservableObject {
     @Published var autoConnect = false { didSet { defaults.set(autoConnect, forKey: "autoConnect"); if !autoConnect { recoveryWork?.cancel(); recoveryRevision = UUID() } } }
     @Published var autoStartOnLaunch = false { didSet { defaults.set(autoStartOnLaunch, forKey: "autoStartOnLaunch"); if !autoStartOnLaunch { cancelAutomaticStart() } } }
     @Published var wakeDisplayOnRemoteInput = false { didSet { defaults.set(wakeDisplayOnRemoteInput, forKey: "wakeDisplayOnRemoteInput") } }
+    @Published var switchDelay = 0 { didSet { defaults.set(switchDelay, forKey: "switchDelay") } }
     private var lastSessionRequested = false
     private var startupWork: DispatchWorkItem?
     private var startupRevision = UUID()
@@ -168,6 +169,7 @@ final class LinkModel: ObservableObject {
         autoConnect = d.object(forKey: "autoConnect") as? Bool ?? true
         autoStartOnLaunch = d.bool(forKey: "autoStartOnLaunch")
         wakeDisplayOnRemoteInput = d.bool(forKey: "wakeDisplayOnRemoteInput")
+        switchDelay = d.integer(forKey: "switchDelay")
         lastSessionRequested = d.bool(forKey: "lastSessionRequested")
         localName = d.string(forKey: "localName") ?? localName
         peerName = d.string(forKey: "peerName") ?? peerName
@@ -236,7 +238,7 @@ final class LinkModel: ObservableObject {
     private func cancelQueuedRecovery() { cancelAutomaticStart(); recoveryRevision = UUID(); recoveryWork?.cancel() }
     func resumeSignal() { suspended = false; append("电脑唤醒：检查已有核心，不强制重启。"); if desired { scheduleRecovery("电脑唤醒") } else { beginAutomaticStart() } }
     func networkSignal() { refreshAddresses(); scheduleRecovery("网络变化") }
-    private var configurationSignature: String { "\(server)|\(localName)|\(peerName)|\(server ? "" : host)|\(layout)|\(inputSettings)|\(wakeDisplayOnRemoteInput)|\(selectedDevice?.fingerprint ?? "")" }
+    private var configurationSignature: String { "\(server)|\(localName)|\(peerName)|\(server ? "" : host)|\(layout)|\(inputSettings)|\(wakeDisplayOnRemoteInput)|\(switchDelay)|\(selectedDevice?.fingerprint ?? "")" }
     private func probeCore(_ completion: @escaping (Bool) -> Void) {
         guard coreReady, let channel = channel else { completion(false); return }
         let nonce = UUID().uuidString; probeNonce = nonce; probeCompletion = completion
@@ -375,11 +377,38 @@ final class LinkModel: ObservableObject {
         d.set(optionMap, forKey: "optionMap"); d.set(shiftMap, forKey: "shiftMap")
         d.set(invertVertical, forKey: "invertVertical"); d.set(invertHorizontal, forKey: "invertHorizontal")
         d.set(verticalSpeed, forKey: "verticalSpeed"); d.set(horizontalSpeed, forKey: "horizontalSpeed")
+        d.set(switchDelay, forKey: "switchDelay")
         do { try peers?.setInput(inputSettings) } catch { issue = error.localizedDescription }
         updateDiscovery()
     }
     var inputSettings: LinkInputSettings {
         LinkInputSettings(command: commandMap, control: controlMap, option: optionMap, shift: shiftMap, invertVertical: invertVertical, invertHorizontal: invertHorizontal, verticalSpeed: verticalSpeed, horizontalSpeed: horizontalSpeed)
+    }
+    func saveAndApply() {
+        save()
+        guard running, desired, !restarting, !closing, let owned = child, owned.isRunning else { return }
+        guard configurationSignature != activeConfiguration else { return }
+        reloadCore(reason: "设置已更改")
+    }
+    private func reloadCore(reason: String) {
+        guard let owned = child, owned.isRunning else { return }
+        restarting = true
+        append(reason + "：请求连接核心正常退出并重新启动。")
+        generation = UUID(); let token = generation
+        channel?.send("stop"); channel?.disconnect(); channel = nil; coreReady = false; connected = false
+        DispatchQueue.global(qos: .utility).async {
+            let deadline = Date().addingTimeInterval(5)
+            while owned.isRunning && Date() < deadline { usleep(50_000) }
+            DispatchQueue.main.async {
+                self.restarting = false
+                guard self.generation == token else { return }
+                guard !owned.isRunning else { self.recoveryBlocked = true; self.title = "等待旧共享进程退出"; self.detail = "自动重载已暂停，避免强制终止后反复启动。"; return }
+                self.child = nil
+                self.running = false
+                guard self.desired, !self.closing else { return }
+                self.start()
+            }
+        }
     }
     func inputPreset(_ macHabit: Bool) {
         commandMap = macHabit ? "ctrl" : "super"; controlMap = macHabit ? "super" : "ctrl"
@@ -422,7 +451,7 @@ final class LinkModel: ObservableObject {
             guard let session = try peers?.session(server: server) else { throw NSError(domain: "LinkDesk", code: 7, userInfo: [NSLocalizedDescriptionKey: "设备列表未就绪。"] ) }
             activeProfile = session
             let config = session.appendingPathComponent("linkdesk-server.conf")
-            let text = try LinkConfiguration.settings(local: localName, peer: peerName, server: server, host: host, layout: layout, configPath: config.path, input: inputSettings, wakeDisplay: wakeDisplayOnRemoteInput, logPath: session.appendingPathComponent("linkdesk-core.log").path)
+            let text = try LinkConfiguration.settings(local: localName, peer: peerName, server: server, host: host, layout: layout, configPath: config.path, input: inputSettings, wakeDisplay: wakeDisplayOnRemoteInput, switchDelay: server ? switchDelay : 0, logPath: session.appendingPathComponent("linkdesk-core.log").path)
             try FileManager.default.createDirectory(at: settingsDir, withIntermediateDirectories: true)
             try text.write(to: session.appendingPathComponent("LinkDesk.conf"), atomically: true, encoding: .utf8)
             try LinkConfiguration.links(local: localName, peer: peerName, layout: layout).write(to: config, atomically: true, encoding: .utf8)
@@ -539,7 +568,7 @@ final class LinkModel: ObservableObject {
             guard let pin = PeerStore.pin(args), !handledFingerprints.contains(pin) else { return }
             handledFingerprints.insert(pin)
             if pin != selectedDevice?.fingerprint { stop(); recoveryBlocked = true; title = "设备身份不一致"; detail = "对方指纹与所选设备不同，连接已停止。请先在设备列表重新核对身份。"; append("拒绝身份不一致的连接；没有修改配对。") }
-        case "connectionRefused": detail = "对方拒绝连接（\(args)），请核对电脑名称与配对。"
+        case "connectionRefused": detail = LinkConfiguration.refusalMessage(args)
         default: break
         }
     }
@@ -679,10 +708,20 @@ struct RootView: View {
             Label("连接方式", systemImage: "arrow.triangle.branch").font(.headline)
             HStack {
                 Text("另一台电脑在本机的")
-                Picker("位置", selection: $model.layout) { Text("右侧").tag("right"); Text("左侧").tag("left"); Text("上方").tag("up"); Text("下方").tag("down") }.labelsHidden().frame(width: 100).disabled(model.running || !model.server)
+                Picker("位置", selection: $model.layout) { Text("右侧").tag("right"); Text("左侧").tag("left"); Text("上方").tag("up"); Text("下方").tag("down") }.labelsHidden().frame(width: 100).disabled(!model.server).onChange(of: model.layout) { _ in model.saveAndApply() }
                 Spacer(); Button("选择配对设备") { model.tab = "devices" }.buttonStyle(.borderless)
             }
-            Text(model.server ? "指针移出对应屏幕边缘时切换，键盘会跟随。更改位置后在下次启动生效。" : "接收端的屏幕位置由共享键鼠的电脑设置。") .font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Text("切换方式")
+                Picker("切换方式", selection: $model.switchDelay) {
+                    Text("立即切换").tag(0)
+                    Text("停留 250 毫秒").tag(250)
+                    Text("停留 500 毫秒").tag(500)
+                    Text("停留 1 秒").tag(1000)
+                }.labelsHidden().frame(width: 140).disabled(!model.server).onChange(of: model.switchDelay) { _ in model.saveAndApply() }
+                Spacer()
+            }
+            Text(model.server ? "指针移出对应屏幕边缘时切换，键盘会跟随。选择“停留”可避免指针擦边时误切换；保存后自动应用。" : "接收端的屏幕位置与切换方式由共享键鼠的电脑设置。") .font(.caption).foregroundStyle(.secondary)
         }.padding(22).background(.white.opacity(0.7), in: RoundedRectangle(cornerRadius: 18))
         Label(model.discoveryStatus, systemImage: "antenna.radiowaves.left.and.right").font(.caption).foregroundStyle(.secondary)
     }
@@ -750,20 +789,20 @@ struct RootView: View {
         }.padding(24).background(.white, in: RoundedRectangle(cornerRadius: 20))
         VStack(alignment: .leading, spacing: 16) {
             Text("显示保护").font(.headline)
-            settingRow("允许远程键鼠请求点亮屏幕", "默认关闭。接收端只在实际远程输入时请求，每次熄屏最多一次；连接和切换电脑不主动点亮。", $model.wakeDisplayOnRemoteInput).disabled(model.running)
+            settingRow("允许远程键鼠请求点亮屏幕", "默认关闭。接收端只在实际远程输入时请求，每次熄屏最多一次；连接和切换电脑不主动点亮。", $model.wakeDisplayOnRemoteInput)
             Text("这是接收端本机的设置。普通键鼠输入仍可能被系统视为活动，不控制另一台电脑的显示器。").font(.caption).foregroundStyle(.secondary)
         }.padding(24).background(.white, in: RoundedRectangle(cornerRadius: 20))
         VStack(alignment: .leading, spacing: 16) {
             Text("电脑与网络").font(.headline)
             HStack(spacing: 8) {
                 Text("本机用途").frame(width: 100, alignment: .leading)
-                Picker("本机用途", selection: $model.server) { Text("共享本机键鼠").tag(true); Text("接收另一台电脑的键鼠").tag(false) }.labelsHidden().pickerStyle(.segmented)
+                Picker("本机用途", selection: $model.server) { Text("共享本机键鼠").tag(true); Text("接收另一台电脑的键鼠").tag(false) }.labelsHidden().pickerStyle(.segmented).disabled(model.running)
             }
             field("本机名称", $model.localName)
             Text("当前选择：" + model.selectedLabel)
-            Text("Mac 与 Windows 都可共享或接收键鼠。两台电脑连接同一路由器、热点或可互通的局域网即可，无需固定的热点形式。") .font(.caption).foregroundStyle(.secondary)
-            HStack { Button("保存电脑信息") { model.save() }.buttonStyle(.bordered); Spacer() }
-        }.disabled(model.running).padding(24).background(.white, in: RoundedRectangle(cornerRadius: 20))
+            Text("Mac 与 Windows 都可共享或接收键鼠。两台电脑连接同一路由器、热点或可互通的局域网即可，无需固定的热点形式。更改用途前请先停止两端共享。") .font(.caption).foregroundStyle(.secondary)
+            HStack { Button("保存电脑信息") { model.saveAndApply() }.buttonStyle(.bordered); Spacer() }
+        }.padding(24).background(.white, in: RoundedRectangle(cornerRadius: 20))
         Button("打开设备控制权限设置") { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!) }.buttonStyle(.borderless)
         Text("已内置连接核心。首次配对请核对两端显示的本机指纹；已有配对会自动迁移。快捷键暂未设置。") .font(.caption).foregroundStyle(.secondary)
     }
@@ -785,7 +824,7 @@ struct RootView: View {
                 modifierRow("Option / ⌥", $model.optionMap)
                 modifierRow("Shift / ⇧", $model.shiftMap)
                 Text("不同系统默认交换 Command/Windows 与 Ctrl/Control，同系统保持原样。设置分别随所选设备保存。") .font(.caption).foregroundStyle(.secondary)
-            }.disabled(!model.server || model.running)
+            }.disabled(!model.server)
         }.padding(24).background(.white, in: RoundedRectangle(cornerRadius: 20))
         VStack(alignment: .leading, spacing: 18) {
             Text("接收键鼠时的滚动").font(.headline)
@@ -796,9 +835,9 @@ struct RootView: View {
                 scrollSpeed("纵向滚动速度", $model.verticalSpeed)
                 scrollSpeed("横向滚动速度", $model.horizontalSpeed)
                 Button("恢复滚动默认值") { model.invertVertical = false; model.invertHorizontal = false; model.verticalSpeed = 1; model.horizontalSpeed = 1 }.buttonStyle(.bordered)
-            }.disabled(model.server || model.running)
+            }.disabled(model.server)
         }.padding(24).background(.white, in: RoundedRectangle(cornerRadius: 20))
-        HStack { Text(model.running ? "请先停止共享，再修改设置。" : "保存后，下次启动共享生效。") .font(.caption).foregroundStyle(.secondary); Spacer(); Button("保存键鼠设置") { model.save() }.buttonStyle(.borderedProminent).tint(accent).disabled(model.running) }
+        HStack { Text(model.running ? "保存后将自动重新加载共享连接。" : "保存后，下次启动共享生效。") .font(.caption).foregroundStyle(.secondary); Spacer(); Button("保存键鼠设置") { model.saveAndApply() }.buttonStyle(.borderedProminent).tint(accent) }
     }
     func modifierRow(_ label: String, _ value: Binding<String>) -> some View {
         HStack(spacing: 8) {

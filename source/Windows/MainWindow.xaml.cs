@@ -33,8 +33,9 @@ public partial class MainWindow : Window {
  private void MacMapping(object s,RoutedEventArgs e)=>Model.MappingPreset(true);
  private void OriginalMapping(object s,RoutedEventArgs e)=>Model.MappingPreset(false);
  private void ResetScrolling(object s,RoutedEventArgs e)=>Model.ResetScrolling();
- private void SaveInput(object s,RoutedEventArgs e){try{_=InputConfiguration.Mapping(Model.MapSuper,Model.MapControl,Model.MapOption,Model.MapShift);_=InputConfiguration.Scrolling(Model.InvertVertical,Model.InvertHorizontal,Model.VerticalSpeed,Model.HorizontalSpeed);Model.Save();MessageBox.Show("已保存，下次启动共享时生效。","LinkDesk");}catch(Exception error){MessageBox.Show(error.Message,"LinkDesk");}}
+ private void SaveInput(object s,RoutedEventArgs e){try{_=InputConfiguration.Mapping(Model.MapSuper,Model.MapControl,Model.MapOption,Model.MapShift);_=InputConfiguration.Scrolling(Model.InvertVertical,Model.InvertHorizontal,Model.VerticalSpeed,Model.HorizontalSpeed);_=InputConfiguration.SwitchDelay(int.Parse(Model.SwitchDelayChoice));bool wasRunning=Model.Running;Model.SaveAndApply();MessageBox.Show(wasRunning?"已保存，正在重新加载共享连接。":"已保存，下次启动共享时生效。","LinkDesk");}catch(Exception error){MessageBox.Show(error.Message,"LinkDesk");}}
  private void ToggleConnection(object s,RoutedEventArgs e){if(!Model.Running&&Model.SelectedDevice is null){Page("devices");return;}Model.Toggle();}
- private void SaveSettings(object s,RoutedEventArgs e){Model.Save();Model.ConfigureDiscovery();Model.PropertyChangedForAddress();MessageBox.Show("已保存，下次启动连接时生效。","LinkDesk");}
+ private void ConnectionOptionChanged(object s,System.Windows.Controls.SelectionChangedEventArgs e){if(IsLoaded)Dispatcher.BeginInvoke(()=>Model.SaveAndApply());}
+ private void SaveSettings(object s,RoutedEventArgs e){bool wasRunning=Model.Running;Model.SaveAndApply();Model.PropertyChangedForAddress();MessageBox.Show(wasRunning?"已保存，正在重新加载共享连接。":"已保存，下次启动连接时生效。","LinkDesk");}
  private void CopyLogs(object s,RoutedEventArgs e)=>Clipboard.SetText(string.Join(Environment.NewLine,Model.Logs));
 }

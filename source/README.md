@@ -1,4 +1,4 @@
-# LinkDesk 0.4.4: both platforms
+# LinkDesk 0.4.5: both platforms
 
 GPL-2.0-only. Native SwiftUI/AppKit on macOS 13+ Apple Silicon; WPF on Windows x64 with self-contained .NET 10. Both packages use audited system-specific Deskflow 1.27.0 display-safety patches and required runtimes. Both apps build from source/VERSION and display their actual assembled version. Users do not install Deskflow or .NET separately.
 
@@ -20,13 +20,15 @@ Each connection uses connections/<selected SHA256>/ as its core profile. Its TLS
 
 Protocol v2 signs the fresh random query nonce, name, source IPv4 address, port, platform and role using the advertised certificate key (RSA SHA-256 PKCS#1 or ECDSA SHA-256 DER). Both implementations validate signature, nonce, source address, field formats and protocol version before displaying a candidate. Only the explicitly selected paired identity can update the current connection address. Broadcast and remembered-address probes are bounded and rate-limited. The Mac responder also answers legacy v1 server queries for migration; both endpoints should upgrade to 0.4.0 for symmetric discovery.
 
-macOS watches NWPathMonitor and wake notifications; Windows watches NetworkAddressChanged and PowerModeChanged. Windows 0.4.3 separates login startup from sharing startup. New and upgraded preferences default automatic sharing and explicit display wake to off. Explicitly enabled sharing startup requires a remembered requested session, a minimum 15-second wait and five seconds of stable physical display topology on the default user desktop. Network recovery coalesces a 10-second quiet window, retains IPC-responsive cores and performs a graceful reload only for a genuine selected configuration change. Unresponsive or unexpectedly exited cores require manual attention; recovery never kills them automatically. Mac 0.4.4 follows the same lifecycle policy; its details are below. Desktop process mode is used; only explicitly stopped or application-owned processes on quit may be terminated after a graceful-stop timeout. The Windows portable marker keeps core TLS state in the selected LinkDesk profile rather than ProgramData/Deskflow.
+macOS watches NWPathMonitor and wake notifications; Windows watches NetworkAddressChanged and PowerModeChanged. Windows 0.4.3 separates login startup from sharing startup. New and upgraded preferences default automatic sharing and explicit display wake to off. Explicitly enabled sharing startup requires a remembered requested session, a minimum 15-second wait and five seconds of stable physical display topology on the default user desktop. Network recovery coalesces a 10-second quiet window, retains IPC-responsive cores and performs a graceful reload only for a genuine selected configuration change. Unresponsive or unexpectedly exited cores require manual attention; recovery never kills them automatically. Mac 0.4.5 follows the same lifecycle policy; its details are below. Desktop process mode is used; only explicitly stopped or application-owned processes on quit may be terminated after a graceful-stop timeout. The Windows portable marker keeps core TLS state in the selected LinkDesk profile rather than ProgramData/Deskflow.
 
 Role advertisements can lag behind a mode change. They are device-list metadata: they never block a selected paired identity from starting or stop an established TLS connection. The core uses the explicitly configured local mode; its actual connection determines compatibility. Saving or starting refreshes the local announcement, without restarting unchanged discovery on each observed packet. Fingerprint validation and selected-only TLS scopes remain mandatory.
 
 ## Input
 
 Modifier mapping is applied by the sharing device; scroll direction and speed by the receiving device. Settings follow the selected peer. New cross-platform pairings exchange Command/Windows and Ctrl/Control; same-platform pairings keep modifiers unchanged. Migrated custom settings are retained. Local input and Mos preferences are untouched. No switching hotkeys were added.
+
+Screen-edge switching defaults to immediate. The sharing side can require the pointer to dwell at the edge for 250/500/1000 ms before switching (core server option enableSwitchDelay/switchDelay). Settings pages stay editable while sharing runs: saving applies a genuine configuration change by gracefully reloading the core (stop, wait, relaunch), while the local role still requires stopping both ends first. Connection refusals are reported as human-readable guidance covering incompatible versions, duplicate client names, unknown clients and protocol errors.
 
 ## Build
 
@@ -61,7 +63,7 @@ The patch removes explicit display wake on connection/enter, disables receiver s
 
 These checks verify application behavior, not GPU/driver reliability. Physical cold boots, screen-off/wake cycles, sleep and network recovery must be verified on affected hardware. No driver changes or remote-control software are used by these workflows. Diagnostic output remains local; it is never automatically uploaded.
 
-## Mac 0.4.4 behavior and build
+## Mac 0.4.5 behavior and build
 
 Mac now follows the same startup separation, explicit remembered session intent, 10-second coalesced recovery, healthy IPC process retention, graceful reconfiguration and no automatic kill/relaunch policy. Set LINKDESK_PATCHED_MAC_CORE to the verified mac-display-core.yml artifact when building; the bundler rejects a missing or unmodified core.
 

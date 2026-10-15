@@ -3,10 +3,10 @@ on:
   workflow_dispatch:
     inputs:
       mac_run:
-        description: Verified Mac 0.4.4 package run
+        description: Verified Mac 0.4.5 package run
         required: true
       windows_run:
-        description: Verified Windows 0.4.4 package run
+        description: Verified Windows 0.4.5 package run
         required: true
 permissions:
   contents: read
@@ -32,22 +32,22 @@ jobs:
           python3 - <<'PY'
           import json
           mac=json.load(open('mac-run.json'));win=json.load(open('win-run.json'))
-          assert mac['name']=='Package verified Mac 0.4.4' and mac['conclusion']=='success'
+          assert mac['name']=='Package verified Mac 0.4.5' and mac['conclusion']=='success'
           assert win['name']=='Package verified Windows display-safety build' and win['conclusion']=='success'
           PY
-          gh run download "$MAC_RUN" --repo "$GITHUB_REPOSITORY" -n LinkDesk-macOS-0.4.4 -D mac
-          gh run download "$WIN_RUN" --repo "$GITHUB_REPOSITORY" -n LinkDesk-Windows-0.4.4 -D windows
+          gh run download "$MAC_RUN" --repo "$GITHUB_REPOSITORY" -n LinkDesk-macOS-0.4.5 -D mac
+          gh run download "$WIN_RUN" --repo "$GITHUB_REPOSITORY" -n LinkDesk-Windows-0.4.5 -D windows
           (cd mac && sha256sum -c SHA256SUMS.txt)
           (cd windows && sha256sum -c SHA256SUMS.txt)
           python3 - <<'PY'
           from pathlib import Path
           import json,plistlib,zipfile,subprocess
-          version=Path('source/VERSION').read_text().strip();assert version=='0.4.4'
-          with zipfile.ZipFile('mac/LinkDesk-macOS-AppleSilicon-0.4.4.zip') as z:
+          version=Path('source/VERSION').read_text().strip();assert version=='0.4.5'
+          with zipfile.ZipFile('mac/LinkDesk-macOS-AppleSilicon-0.4.5.zip') as z:
               info=plistlib.loads(z.read('LinkDesk.app/Contents/Info.plist'))
               assert info['CFBundleShortVersionString']==version
               mac=json.loads(z.read('LinkDesk.app/Contents/Resources/build-inputs.json'))
-          with zipfile.ZipFile('windows/LinkDesk-Windows-0.4.4.zip') as z:
+          with zipfile.ZipFile('windows/LinkDesk-Windows-0.4.5.zip') as z:
               win=json.loads(z.read('build-inputs.json').decode('utf-8-sig'))
           for data,paths in [(mac,['source/VERSION','source/macOS','source/core-patches/mac-display-safety.patch','source/scripts/build-mac.sh','source/scripts/bundle-runtime.py','source/scripts/finalize-mac-manifest.py']),(win,['source/VERSION','source/Windows','source/core-patches/windows-display-safety.patch','source/scripts/bundle-runtime.py',':(exclude)source/Windows/*.txt'])]:
               assert data['version']==version
@@ -60,21 +60,21 @@ jobs:
         run: |
           set -eu
           mkdir release
-          cp mac/LinkDesk-macOS-AppleSilicon-0.4.4.zip windows/LinkDesk-Windows-0.4.4.zip release/
-          git archive --format=zip HEAD -o release/LinkDesk-source-0.4.4.zip
+          cp mac/LinkDesk-macOS-AppleSilicon-0.4.5.zip windows/LinkDesk-Windows-0.4.5.zip release/
+          git archive --format=zip HEAD -o release/LinkDesk-source-0.4.5.zip
           (cd release && sha256sum *.zip > SHA256SUMS.txt)
           cat > notes.md <<'NOTES'
-          Mac and Windows are both version 0.4.4. Both apps use one source/VERSION and display their actual assembled version.
+          Mac 和 Windows 同步更新为 0.4.5 独立版，无需另装 Deskflow；Windows 无需另装 .NET。
 
-          - Both platforms separate login startup, optional sharing startup, and recovery of an explicitly started session. New sharing-start and extra display-wake settings default off.
-          - Healthy cores remain running after wake/network changes. Changes coalesce for 10 seconds; selected configuration changes request graceful reload. Manual stop stays stopped; hung/crashed cores do not automatically enter kill/relaunch loops.
-          - Mac now has a real native receiver display-wake control matching Windows. Connection/entry does not request display wake; optional extra wake only responds to actual remote input once per observed off cycle. The switches control each receiving computer locally, not the other device, and do not add Wake-on-LAN for sleeping machines.
-          - Both complete packages include patched cores, required runtimes, licenses and integrity metadata. Pairing, keyboard mappings and scrolling settings remain compatible. No external Deskflow or .NET installation needed.
+          - 新增屏幕边缘停留切换：立即、250 毫秒、500 毫秒、1 秒，由共享端设置。
+          - 共享时可以修改键鼠、屏幕位置和显示保护设置，保存后正常退出旧核心再重新连接；停止期间不会被重载任务再次启动。本机用途仍需先停止共享。
+          - 连接失败提示增加版本不兼容、重复电脑名称、未知客户端及协议错误的具体说明。
+          - 保留 0.4.4 的登录启动与自动共享分离、桌面稳定等待、网络恢复及默认关闭的额外显示唤醒请求。连接核心补丁未改变。
 
-          Native core builds, display-policy checks, actual isolated Swift/WPF lifecycle tests, complete runtime/signature checks and package/version checks passed. Hardware cold boot, screen-off/wake and actual cross-device behavior still need verification; no claim of a fully repaired GPU/driver black-screen fault is made.
+          已验证双端配置、实际 Swift/WPF 模型的隔离重载与停止流程、Windows 后台启动、完整包运行库与版本校验。新版实机连接仍需更新后验证，不声称已确认修复显卡或驱动故障。
 
-          Update both apps. Windows: quit from the tray, fully extract the ZIP and retain core/ and ThirdParty/. Mac: replace the app in Applications; updated ad-hoc signed code may need device-control permission renewed. Mac is not notarized and Windows is not release-signed.
+          Windows：退出托盘旧版，完整解压后运行 LinkDesk.exe，保留 core/ 和 ThirdParty/。Mac：将完整 LinkDesk.app 替换到“应用程序”；本地签名更新后可能需要重新授予设备控制权限。Mac 尚未公证，Windows 尚未进行发布签名。
 
-          Full LinkDesk source and both patches/build instructions are in the source ZIP. Unchanged upstream source archives remain available at https://github.com/vvanjune/LinkDesk/releases/tag/v0.4.0. No user identities, private keys, pairing records, settings or diagnosis logs are shipped.
+          完整 LinkDesk 源码、补丁和构建说明见源码包。未变化的上游源码包仍在 https://github.com/vvanjune/LinkDesk/releases/tag/v0.4.0 。安装包不含个人身份、私钥、配对记录或诊断日志。
           NOTES
-          gh release create v0.4.4 --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --title 'LinkDesk 0.4.4 — matching Mac and Windows settings' --notes-file notes.md release/*.zip release/SHA256SUMS.txt
+          gh release create v0.4.5 --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --title 'LinkDesk 0.4.5 — 边缘停留切换与设置重载' --notes-file notes.md release/*.zip release/SHA256SUMS.txt

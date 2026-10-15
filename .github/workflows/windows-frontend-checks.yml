@@ -7,6 +7,8 @@ on:
       - '!source/Windows/*.txt'
       - 'source/VERSION'
       - 'source/tests/WindowsModel/**'
+      - 'source/tests/InputSettings/**'
+      - 'source/tests/InputSettingsTests.cs'
       - 'source/tests/FakeCore/**'
       - 'source/tests/RecoveryIntentTests.cs'
       - 'source/scripts/collect-windows-diagnostics.cmd'
@@ -34,6 +36,8 @@ jobs:
       - name: Build test fixture and run actual model lifecycle checks
         shell: pwsh
         run: |
+          dotnet run --project source/tests/InputSettings/InputSettings.csproj -c Release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           dotnet build source/tests/FakeCore/FakeCore.csproj -c Release -o fake
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           dotnet run --project source/tests/WindowsModel/WindowsModel.csproj -c Release -- "$PWD/fake/deskflow-core.exe"

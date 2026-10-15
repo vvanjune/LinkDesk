@@ -1,4 +1,4 @@
-name: Package verified Mac 0.4.4
+name: Package verified Mac 0.4.5
 on:
   workflow_dispatch:
     inputs:
@@ -52,7 +52,7 @@ jobs:
           import hashlib,json,plistlib,os
           app=Path('package/LinkDesk.app');contents=app/'Contents'
           version=plistlib.loads((contents/'Info.plist').read_bytes())['CFBundleShortVersionString']
-          assert version==Path('source/VERSION').read_text().strip()=='0.4.4'
+          assert version==Path('source/VERSION').read_text().strip()=='0.4.5'
           metadata=json.loads((contents/'Resources/linkdesk-core.json').read_text())
           assert hashlib.sha256((contents/'MacOS/deskflow-core').read_bytes()).hexdigest()==metadata['sha256']
           manifest=json.loads((contents/'Resources/ThirdParty/runtime-files.json').read_text())
@@ -63,13 +63,13 @@ jobs:
           codesign --force --sign - package/LinkDesk.app
           codesign --verify --deep --strict package/LinkDesk.app
           package/LinkDesk.app/Contents/MacOS/deskflow-core --version
-          ditto -c -k --sequesterRsrc --keepParent package/LinkDesk.app LinkDesk-macOS-AppleSilicon-0.4.4.zip
-          shasum -a 256 LinkDesk-macOS-AppleSilicon-0.4.4.zip > SHA256SUMS.txt
+          ditto -c -k --sequesterRsrc --keepParent package/LinkDesk.app LinkDesk-macOS-AppleSilicon-0.4.5.zip
+          shasum -a 256 LinkDesk-macOS-AppleSilicon-0.4.5.zip > SHA256SUMS.txt
           hdiutil detach "$RUNNER_TEMP/deskflow-runtime"
       - uses: actions/upload-artifact@v4
         with:
-          name: LinkDesk-macOS-0.4.4
+          name: LinkDesk-macOS-0.4.5
           path: |
-            LinkDesk-macOS-AppleSilicon-0.4.4.zip
+            LinkDesk-macOS-AppleSilicon-0.4.5.zip
             SHA256SUMS.txt
           retention-days: 14

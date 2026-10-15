@@ -29,10 +29,12 @@ enum LinkConfiguration {
         // IPv4, DNS and bracketed IPv6 only; never permit INI sections or line injection.
         !value.isEmpty && value.count <= 255 && value.range(of: "^[A-Za-z0-9_.:\\[\\]-]+$", options: .regularExpression) != nil
     }
-    static func settings(local: String, peer: String, server: Bool, host: String, layout: String, configPath: String, input: LinkInputSettings = LinkInputSettings(), wakeDisplay: Bool = false, logPath: String? = nil) throws -> String {
+    static func settings(local: String, peer: String, server: Bool, host: String, layout: String, configPath: String, input: LinkInputSettings = LinkInputSettings(), wakeDisplay: Bool = false, switchDelay: Int = 0, logPath: String? = nil) throws -> String {
         guard validName(local), validName(peer), local != peer else { throw NSError(domain: "LinkDesk", code: 1, userInfo: [NSLocalizedDescriptionKey: "电脑名称只能包含英文字母、数字、点、短横线和下划线，而且两台不能重名。"] ) }
         guard server || validHost(host) else { throw NSError(domain: "LinkDesk", code: 2, userInfo: [NSLocalizedDescriptionKey: "请输入有效的共享端 IP 地址或主机名。"] ) }
         guard input.valid else { throw NSError(domain: "LinkDesk", code: 3, userInfo: [NSLocalizedDescriptionKey: "请使用有效的按键映射及 0.1–10 倍滚动速度。"] ) }
+        guard switchDelay >= 0, switchDelay <= 5000 else { throw NSError(domain: "LinkDesk", code: 4, userInfo: [NSLocalizedDescriptionKey: "切换停留时间须在 0–5000 毫秒之间。"] ) }
+        let switchOption = server && switchDelay > 0 ? "enableSwitchDelay=true\nswitchDelay=\(switchDelay)\n" : ""
         return """
         [core]
         computerName=\(local)
@@ -61,7 +63,7 @@ enum LinkConfiguration {
         protocol=barrier
         enableClipboard=true
         clipboardSize=3
-        [security]
+        \(switchOption)[security]
         tlsEnabled=true
         checkPeerFingerprints=true
         [log]
@@ -78,5 +80,14 @@ enum LinkConfiguration {
         let hex = value.replacingOccurrences(of: ":", with: "").lowercased()
         guard hex.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else { return nil }
         return "v2:sha256:\(hex)"
+    }
+    static func refusalMessage(_ args: String) -> String {
+        switch args {
+        case "IncompatibleVersion": return "对方拒绝连接：两端核心版本不兼容。请把两台电脑都更新到同一版 LinkDesk。"
+        case "AlreadyConnected": return "对方拒绝连接：已有一台同名电脑在连接中。请确认没有重名的设备，也没有重复启动共享。"
+        case "UnknownClient": return "对方拒绝连接：对方没有本机的配对记录。请在对方的“配对设备”中选择并核对本机，并确认两端电脑名称一致。"
+        case "ProtocolError": return "对方拒绝连接：握手协议出错。请两端停止共享后重新启动；仍失败请查看连接日志。"
+        default: return "对方拒绝连接（\(args)），请核对电脑名称与配对。"
+        }
     }
 }

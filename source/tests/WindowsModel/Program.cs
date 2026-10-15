@@ -42,11 +42,21 @@ class Program {
    File.Delete(trace+".hold");model.Stop();await Until(()=>!model.Running);
    model.Start();await Until(()=>model.Connected);File.WriteAllText(trace+".crash","");model.NetworkSignal();await Until(()=>!model.Running);await Task.Delay(400);model.ResumeSignal();model.NetworkSignal();await Task.Delay(400);
    Check(Launches().Length==4,"crashed core was automatically relaunched");File.Delete(trace+".crash");
+   model.Start();await Until(()=>model.Connected);
+   int beforeEdit=Launches().Length;
+   model.InvertVertical=!model.InvertVertical;model.SaveAndApply();
+   await Until(()=>Launches().Length==beforeEdit+1&&model.Connected);
+   model.SaveAndApply();await Task.Delay(200);
+   Check(Launches().Length==beforeEdit+1,"unchanged settings reloaded core");
+   model.InvertVertical=!model.InvertVertical;model.SaveAndApply();model.Stop();
+   await Until(()=>!model.Running);await Task.Delay(300);
+   Check(Launches().Length==beforeEdit+1,"stop during settings reload restarted core");
+   int finalLaunchCount=Launches().Length;
    // Recreate a remembered session without ever waiting for the startup delay.
    var prefs=JsonSerializer.Deserialize<Preferences>(File.ReadAllText(Path.Combine(profile,"preferences.json")))!;prefs.AutoStartOnLaunch=true;prefs.LastSessionRequested=true;
    model.Dispose();File.WriteAllText(Path.Combine(profile,"preferences.json"),JsonSerializer.Serialize(prefs));
    using var queued=new LinkModel(profile,Path.GetFullPath(core),false,()=>new(true,"fixture-display"),TimeSpan.FromMilliseconds(30));queued.BeginAutomaticStart();queued.Stop();await queued.AutomaticStartTask;
-   Check(Launches().Length==4,"stop did not cancel opted-in queued startup");
+   Check(Launches().Length==finalLaunchCount,"stop did not cancel opted-in queued startup");
   }finally{
    // Cleanup is confined to fake processes launched by this test, never user cores.
    foreach(int id in Launches())try{using var p=Process.GetProcessById(id);if(!p.HasExited)p.Kill();}catch{}

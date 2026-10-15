@@ -30,6 +30,7 @@ public sealed class Preferences {
  public bool AutoStartOnLaunch {get;set;}
  public bool LastSessionRequested {get;set;}
  public bool WakeDisplayOnRemoteInput {get;set;}
+ public int SwitchDelay {get;set;}
  public string MapSuper {get;set;}="super";
  public string MapControl {get;set;}="ctrl";
  public string MapOption {get;set;}="alt";
@@ -93,6 +94,10 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
  public bool AutoConnect {get=>preferences.AutoConnect;set{preferences.AutoConnect=value;if(!value)recovery.Signal();Save();Changed();}}
  public bool AutoStartOnLaunch {get=>preferences.AutoStartOnLaunch;set{preferences.AutoStartOnLaunch=value;if(!value)CancelAutomaticStart();Save();Changed();}}
  public bool WakeDisplayOnRemoteInput {get=>preferences.WakeDisplayOnRemoteInput;set{preferences.WakeDisplayOnRemoteInput=value;Save();Changed();}}
+ public string SwitchDelayChoice {
+  get=>Math.Clamp(preferences.SwitchDelay,0,5000).ToString();
+  set{if(int.TryParse(value,out var v))preferences.SwitchDelay=Math.Clamp(v,0,5000);Changed();}
+ }
  public bool AutoDiscover {get=>preferences.AutoDiscover;set{preferences.AutoDiscover=value;Save();Changed();Changed(nameof(CanManualHost));ConfigureDiscovery();}}
  public bool CanManualHost=>CanEdit&&!Server;
  public string LocalFingerprint {get;private set;}="正在准备本机身份…";
@@ -106,8 +111,8 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
  public bool InvertHorizontal {get=>preferences.InvertHorizontal;set{preferences.InvertHorizontal=value;Changed();}}
  public double VerticalSpeed {get=>preferences.VerticalSpeed;set{preferences.VerticalSpeed=value;Changed();}}
  public double HorizontalSpeed {get=>preferences.HorizontalSpeed;set{preferences.HorizontalSpeed=value;Changed();}}
- public bool CanMap=>Server&&!Running;
- public bool CanScroll=>!Server&&!Running;
+ public bool CanMap=>Server;
+ public bool CanScroll=>!Server;
  public string MappingHint=>Server?"只改变另一台电脑收到的按键，本机键盘保持原样。":"按键映射由共享端发送。请在另一台电脑的“键盘与鼠标”中设置。";
  public string ScrollingHint=>Server?"接收端滚动设置请在另一台电脑调整。":"仅调整来自另一台电脑的远程滚动，不影响本机鼠标。";
  public void MappingPreset(bool macHabit){MapSuper=macHabit?"ctrl":"super";MapControl=macHabit?"super":"ctrl";MapOption="alt";MapShift="shift";}
@@ -252,14 +257,28 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
    if(action==RecoveryAction.Hold){recovery.Block();Status="共享核心暂未响应";Detail="保留现场，不自动反复重启。请查看连接日志后手动停止并重试。";return;}
    if(action==RecoveryAction.Start){Start();return;}
    if(action!=RecoveryAction.Reload)return;
-   var owned=child;var id=++generation;Connected=false;SendStop();session?.Cancel();pipe?.Dispose();pipe=null;
-   if(owned is not null&&!owned.HasExited) {
-    var exit=owned.WaitForExitAsync();
-    if(await Task.WhenAny(exit,Task.Delay(5000))!=exit){recovery.Block();Status="等待旧共享进程退出";Detail="自动恢复已暂停，避免强制终止后反复启动。";return;}
-   }
-   owned?.Dispose();child=null;Running=false;
-   if(!disposed&&desired&&recovery.Current(request,AutoConnect)&&generation==id){WriteConfiguration();Launch();}
+   if(!recovery.Current(request,AutoConnect))return;
+   await ReloadCore(reason,()=>recovery.Current(request,AutoConnect));
   }catch(Exception e){recovery.Block();Status="自动恢复已暂停";Detail=e.Message;Log("恢复检查失败："+e.Message);}
+  finally{restarting=false;}
+ }
+ private async Task ReloadCore(string reason,Func<bool>? stillRequested=null) {
+  Log(reason+"：请求连接核心正常退出并重新启动。");
+  var owned=child;var id=++generation;Connected=false;SendStop();session?.Cancel();pipe?.Dispose();pipe=null;
+  if(owned is not null&&!owned.HasExited) {
+   var exit=owned.WaitForExitAsync();
+   if(await Task.WhenAny(exit,Task.Delay(5000))!=exit){recovery.Block();Status="等待旧共享进程退出";Detail="重载已暂停，避免强制终止后反复启动。";return;}
+  }
+  owned?.Dispose();child=null;Running=false;
+  if(!disposed&&desired&&generation==id&&(stillRequested?.Invoke()??true)){WriteConfiguration();Launch();}
+ }
+ public async void SaveAndApply() {
+  Save();
+  if(disposed||!Running||!desired||restarting)return;
+  if(DesiredConfiguration()==activeConfiguration)return;
+  restarting=true;
+  try{await ReloadCore("设置更改");}
+  catch(Exception e){recovery.Block();Status="重载失败";Detail=e.Message;Log("设置重载失败："+e.Message);}
   finally{restarting=false;}
  }
  public void Save() { try {peers?.SetInput(CurrentInput());Directory.CreateDirectory(folder);File.WriteAllText(Path.Combine(folder,"preferences.json"),JsonSerializer.Serialize(preferences,new JsonSerializerOptions{WriteIndented=true}));ConfigureDiscovery();}catch(Exception e){MessageBox.Show("保存失败："+e.Message,"LinkDesk");} }
@@ -274,7 +293,7 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
   using var stream=File.OpenRead(engine);var hash=Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
   if(metadata.RootElement.GetProperty("sha256").GetString()!=hash)throw new InvalidOperationException("显示保护核心校验失败，请重新解压完整安装包。");
  }
- private string DesiredConfiguration()=>string.Join("|",Server,LocalName,PeerName,Server?"":Host,Layout,MapSuper,MapControl,MapOption,MapShift,InvertVertical,InvertHorizontal,VerticalSpeed,HorizontalSpeed,WakeDisplayOnRemoteInput,SelectedDevice?.Fingerprint);
+ private string DesiredConfiguration()=>string.Join("|",Server,LocalName,PeerName,Server?"":Host,Layout,MapSuper,MapControl,MapOption,MapShift,InvertVertical,InvertHorizontal,VerticalSpeed,HorizontalSpeed,WakeDisplayOnRemoteInput,Server?SwitchDelayChoice:"0",SelectedDevice?.Fingerprint);
 
  private static bool Name(string s)=>Regex.IsMatch(s,@"^[A-Za-z0-9][A-Za-z0-9_.-]{0,254}$");
  public void Start() {
@@ -300,8 +319,9 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
    var scrolling=InputConfiguration.Scrolling(InvertVertical,InvertHorizontal,VerticalSpeed,HorizontalSpeed);
    var reverse=new Dictionary<string,string>{{"right","left"},{"left","right"},{"up","down"},{"down","up"}};
    var dir=reverse.ContainsKey(Layout)?Layout:"left";
+   var switchOption=(Server?InputConfiguration.SwitchDelay(preferences.SwitchDelay):"");
    File.WriteAllText(config,$"section: links\n\t{LocalName}:\n\t\t{dir} = {PeerName}\n\t{PeerName}:\n\t\t{reverse[dir]} = {LocalName}\nend\n\nsection: options\nend\n");
-   File.WriteAllText(Path.Combine(activeProfile,"LinkDesk.conf"),$"[core]\ncomputerName={LocalName}\ncoreMode={(Server?2:1)}\nprocessMode=0\nport=24800\npreventSleep=false\nwindowsScreenSaverSync=false\nwindowsWakeDisplayOnRemoteInput={WakeDisplayOnRemoteInput.ToString().ToLowerInvariant()}\n[computer_{LocalName}]\nname={LocalName}\n[computer_{PeerName}]\nname={PeerName}\n{(Server?mapping:"")}[client]\nremoteHost={Host}\nlanguageSync=false\ndynamicConnectionInterval=true\n{scrolling}[server]\nexternalConfig=true\nexternalConfigFile={config.Replace('\\','/')}\nprotocol=barrier\nenableClipboard=true\nclipboardSize=3\n[security]\ntlsEnabled=true\ncheckPeerFingerprints=true\n[log]\nlevel=Info\ntoFile=true\nfile={Path.Combine(activeProfile,"linkdesk-core.log").Replace('\\','/')}\n");
+   File.WriteAllText(Path.Combine(activeProfile,"LinkDesk.conf"),$"[core]\ncomputerName={LocalName}\ncoreMode={(Server?2:1)}\nprocessMode=0\nport=24800\npreventSleep=false\nwindowsScreenSaverSync=false\nwindowsWakeDisplayOnRemoteInput={WakeDisplayOnRemoteInput.ToString().ToLowerInvariant()}\n[computer_{LocalName}]\nname={LocalName}\n[computer_{PeerName}]\nname={PeerName}\n{(Server?mapping:"")}[client]\nremoteHost={Host}\nlanguageSync=false\ndynamicConnectionInterval=true\n{scrolling}[server]\nexternalConfig=true\nexternalConfigFile={config.Replace('\\','/')}\nprotocol=barrier\nenableClipboard=true\nclipboardSize=3\n{switchOption}[security]\ntlsEnabled=true\ncheckPeerFingerprints=true\n[log]\nlevel=Info\ntoFile=true\nfile={Path.Combine(activeProfile,"linkdesk-core.log").Replace('\\','/')}\n");
    activeConfiguration=DesiredConfiguration();
  }
  private void Launch() {
@@ -339,7 +359,7 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
    case "pong":if(args==probeNonce)probe?.TrySetResult(true);break;
    case "connectionState":Connected=args=="Connected";Status=Connected?"两台电脑已连接":Server?"等待所选设备":"正在重连所选设备";Detail=Connected?"键盘和鼠标可以在两台电脑间使用。":"网络恢复后会自动重连。";break;
    case "connectedClients":Connected=args.Length>0;Status=Connected?"两台电脑已连接":"等待另一台电脑";Detail=Connected?"已连接："+args:"等待安全连接。";break;
-   case "connectionRefused":Detail="对方拒绝连接："+args;break;
+   case "connectionRefused":Detail=RefusalMessages.Describe(args);break;
    case "peerFingerprint":
     var observed=PeerStore.Pin(args);if(observed is null||!seen.Add(observed))break;
     if(observed!=SelectedDevice?.Fingerprint){Stop();Status="设备身份不一致";Detail="对方指纹与所选设备不同，连接已停止。请先在设备列表重新核对身份。";Log("拒绝身份不一致的连接；没有修改配对。");}break;
