@@ -414,6 +414,7 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
   p.OutputDataReceived+=Line;p.ErrorDataReceived+=Line;
   p.Exited+=(_,_)=>Application.Current.Dispatcher.BeginInvoke(()=>{
    if(disposed||id!=generation)return;
+   probe?.TrySetResult(false);
    if(!desired){Running=false;Connected=false;session?.Cancel();pipe?.Dispose();pipe=null;if(!identityRejected){Status="已停止";Detail="点击启动，恢复键鼠共享。";}return;}
    ResetFailure();restartPending=false;
    int exit=p.ExitCode;Running=false;Connected=false;pipe?.Dispose();pipe=null;session?.Cancel();

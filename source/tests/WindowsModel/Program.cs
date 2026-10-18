@@ -104,6 +104,9 @@ class Program {
    model.Dispose();File.WriteAllText(Path.Combine(profile,"preferences.json"),JsonSerializer.Serialize(prefs));
    using var queued=new LinkModel(profile,Path.GetFullPath(core),false,()=>new(true,"fixture-display"),TimeSpan.FromMilliseconds(30));queued.BeginAutomaticStart();queued.Stop();await queued.AutomaticStartTask;
    Check(Launches().Length==finalLaunchCount,"stop did not cancel opted-in queued startup");
+  }catch{
+   var log=Path.Combine(profile,"linkdesk-session.log");if(File.Exists(log))foreach(var line in File.ReadLines(log).TakeLast(80))Console.Error.WriteLine(line);
+   throw;
   }finally{
    // Cleanup is confined to fake processes launched by this test, never user cores.
    foreach(int id in Launches())try{using var p=Process.GetProcessById(id);if(!p.HasExited)p.Kill();}catch{}
