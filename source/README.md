@@ -1,4 +1,4 @@
-# LinkDesk 0.4.6: both platforms
+# LinkDesk 0.4.7: both platforms
 
 GPL-2.0-only. Native SwiftUI/AppKit on macOS 13+ Apple Silicon; WPF on Windows x64 with self-contained .NET 10. Both packages use audited system-specific Deskflow 1.27.0 display-safety patches and required runtimes. Both apps build from source/VERSION and display their actual assembled version. Users do not install Deskflow or .NET separately.
 
