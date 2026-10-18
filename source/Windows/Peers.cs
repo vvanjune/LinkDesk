@@ -106,6 +106,12 @@ public sealed class PeerStore {
  }
  public void Pair(string id){var d=database.Devices.FirstOrDefault(d=>d.Id==id);if(d is null)return;d.Paired=true;database.SelectedID=id;Save();}
  public void Select(string id){if(!database.Devices.Any(d=>d.Id==id&&d.Paired))return;database.SelectedID=id;Save();}
+ public void UpdateSelectedAddress(string id,string address){
+  var d=Selected;if(d is null||d.Id!=id)throw new InvalidOperationException("只能更新当前已选择的配对设备。");
+  if(!Regex.IsMatch(address,@"^[A-Za-z0-9_.:\[\]-]{1,255}$")||Uri.CheckHostName(address)==UriHostNameType.Unknown)throw new ArgumentException("请输入有效的 IP 地址或主机名，不含端口、路径或空格。");
+  var old=d.Address;var seen=d.LastSeen;d.Address=address;d.LastSeen=0;
+  try{Save();}catch{d.Address=old;d.LastSeen=seen;throw;}
+ }
  public void Rename(string id,string alias){var d=database.Devices.FirstOrDefault(d=>d.Id==id&&d.Paired);if(d is null)return;d.Alias=alias.Trim()[..Math.Min(80,alias.Trim().Length)];Save();}
  public void SetInput(PeerInput input){if(Selected is null)return;Selected.Input=input;Save();}
  public void Forget(string id){if(Pin(id)!=id)return;database.Devices.RemoveAll(d=>d.Id==id);if(database.SelectedID==id)database.SelectedID=null;Save();var folder=Path.Combine(profile,"connections",id);if(Directory.Exists(folder))Directory.Delete(folder,true);}

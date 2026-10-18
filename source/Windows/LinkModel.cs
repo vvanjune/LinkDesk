@@ -58,29 +58,47 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
  private bool failureEscalated;
  private long failureRevision;
  internal int FailureRefreshes {get;private set;}
- private void ResetFailure(){failingSince=null;failureCount=0;failureEscalated=false;lastRefreshAt=DateTime.MinValue;failureRevision++;}
+ private void ResetFailure(){connectionFailure="";refusalDetail="";failingSince=null;failureCount=0;failureEscalated=false;lastRefreshAt=DateTime.MinValue;failureRevision++;}
  private void ConnectionRecovered(){
   if(failingSince is {} since){var elapsed=DateTime.UtcNow-since;Log($"连接恢复，本次中断 {(int)elapsed.TotalMinutes} 分 {elapsed.Seconds} 秒");}
   ResetFailure();
  }
- private bool ObserveConnectionOutput(string line){
+ internal bool ObserveConnectionOutput(string line){
   if(disposed||!desired||Server)return false;
-  if(line.Contains("connected to secure socket",StringComparison.OrdinalIgnoreCase)){Handle("connectionState=Connected");return false;}
+  if(line.Contains("connected to secure socket",StringComparison.OrdinalIgnoreCase)){if(Connected||refusalDetail.Length>0)return false;Status="正在确认共享连接";Detail="加密通道已建立，等待共享会话确认。";return false;}
   if(!line.Contains("failed to connect to server",StringComparison.OrdinalIgnoreCase)&&!line.Contains("server is dead",StringComparison.OrdinalIgnoreCase))return false;
+  connectionFailure=line.Contains("refused",StringComparison.OrdinalIgnoreCase)?"当前地址的连接被拒绝，请确认对端已启动共享并允许局域网访问。":
+   line.Contains("timed out",StringComparison.OrdinalIgnoreCase)?"连接超时，尚不能判断是对端未就绪、网络隔离还是防火墙阻断。":
+   line.Contains("server is dead",StringComparison.OrdinalIgnoreCase)?"与共享端的连接已中断，正在等待重新连接。":"暂时无法建立连接，请确认地址和对端共享状态。";
   Connected=false;failureCount++;
   if(failingSince is null){Status="正在重连所选设备";Detail="当前地址："+Host;failingSince=DateTime.UtcNow;Log("连接失败开始："+Host);_=WatchFailure(++failureRevision);}
   return true;
  }
  private async Task WatchFailure(long revision){
   while(revision==failureRevision&&failingSince is {} since&&!disposed&&desired&&!Server){
-   if(Running&&!restarting&&AutoConnect&&!recovery.Paused&&!recovery.Blocked){
+   if(Running&&!restarting&&!recovery.Paused&&!recovery.Blocked){
     var now=DateTime.UtcNow;var elapsed=now-since;
-    if(elapsed>=failureNotice&&(now-lastRefreshAt).TotalSeconds>=15){lastRefreshAt=now;FailureRefreshes++;discovery?.Refresh();}
+    if(AutoConnect&&elapsed>=failureNotice&&(now-lastRefreshAt).TotalSeconds>=15){lastRefreshAt=now;FailureRefreshes++;discovery?.Refresh();}
     if(elapsed>=failureEscalate&&!failureEscalated){failureEscalated=true;Log("连接失败持续："+Host+"；请检查对端共享与网络。");}
-    if(elapsed>=failureNotice){Status=failureEscalated?"无法连接所选设备":"正在重新查找所选设备";Detail=failureEscalated?"当前地址："+Host+"。请确认另一端已启动共享、两端在同一网络；若对方地址已变，请在“配对设备”重新查找。":"当前地址："+Host;}
+    ShowConnectionFailure();
    }
    await Task.Delay(100);
   }
+ }
+ internal string ConnectionDiagnosis {
+  get {
+   var peer=SelectedDevice;
+   var found=peer?.Online==true?(peer.Role=="client"?"最近发现对端应用，但它公告为接收端；请核对另一端已切换到共享。":"最近发现对端应用；发现成功不代表共享连接已建立。"):
+    AutoDiscover?"暂未发现所选设备，这不代表 Wi-Fi 已断开。":"局域网发现已关闭，请核对保存的地址。";
+   return $"当前地址：{Host}。{found} {connectionFailure} 若地址已变，可停止共享后在“配对设备”更新地址。";
+  }
+ }
+ private void ShowConnectionFailure(){
+  if(!desired||Connected||restarting||recovery.Blocked)return;
+  if(refusalDetail.Length>0){Status="连接被拒绝";Detail=refusalDetail;return;}
+  if(failingSince is not {} since)return;
+  Status=failureEscalated?"无法连接所选设备":DateTime.UtcNow-since>=failureNotice?(AutoConnect&&AutoDiscover?"正在重新查找所选设备":"正在等待重新连接"):"正在重连所选设备";
+  Detail=ConnectionDiagnosis;
  }
  private readonly RecoveryIntent recovery = new();
  private CancellationTokenSource? startup;
@@ -97,6 +115,11 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
  private bool disposed;
  private bool restarting;
  private bool urgentRecovery;
+ private bool restartPending, settingsPending, identityRejected;
+ private long stopRevision;
+ private DateTime coreStartedAt;
+ private string connectionFailure="", refusalDetail="";
+ private bool DesktopReady=>!suspended&&!locked&&ReadDesktop().Ready;
  private DiscoveryClient? discovery;
  private DiscoveryResponder? announcement;
  private PeerStore? peers;
@@ -208,6 +231,13 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
   if(pin==PeerStore.Pin(LocalFingerprint)||!Name(ManualName)||!Regex.IsMatch(ManualHost,@"^[A-Za-z0-9_.:\[\]-]{1,255}$")||pin is null){MessageBox.Show("请输入对方的本机名称、地址和完整 SHA-256 本机指纹。","LinkDesk");return;}
   try{peers?.Observe(new PairedDevice{Fingerprint=pin,Name=ManualName,Address=ManualHost,Platform=ManualPlatform,Role=Server?"client":"server"});RefreshDevices();SelectDevice(pin);}catch(Exception e){MessageBox.Show(e.Message,"LinkDesk");}
  }
+ public void UpdateSelectedAddress(string id,string address){
+  if(Running||desired||restarting)throw new InvalidOperationException("请先停止共享，再更新地址。");
+  if(peers is null||SelectedDevice?.Id!=id)throw new InvalidOperationException("只能更新当前已选择的配对设备。");
+  var old=SelectedDevice?.Address;
+  peers.UpdateSelectedAddress(id,address.Trim());ApplySelected(false);Save();RefreshDevices();lastDiscoverySeen=DateTime.MinValue;
+  Log($"手动更新所选设备地址：{old} → {Host}；配对指纹不变。");Status="设备地址已更新";Detail="点击启动共享，仍会核对原有配对身份。";
+ }
  public void RenameDevice(string id,string alias){try{peers?.Rename(id,alias);RefreshDevices();}catch(Exception e){MessageBox.Show(e.Message,"LinkDesk");}}
  public void ForgetDevice(string id){if(Running){MessageBox.Show("请先停止共享，再忘记设备。","LinkDesk");return;}try{if(SelectedDevice?.Id==id)Stop();peers?.Forget(id);RefreshDevices();Status="配对已移除";Detail="再次连接需要重新核对指纹。";}catch(Exception e){MessageBox.Show(e.Message,"LinkDesk");}}
  public void RefreshDiscovery()=>discovery?.Refresh();
@@ -261,16 +291,17 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
  private void CancelAutomaticStart(){startup?.Cancel();startup?.Dispose();startup=null;}
  private void NetworkChanged(object? sender,EventArgs e)=>Application.Current.Dispatcher.BeginInvoke(NetworkSignal);
  internal void NetworkSignal(){if(disposed)return;Changed(nameof(Address));discovery?.Refresh();RequestRecovery("网络变化");}
+ internal void PauseSignal(){suspended=true;recovery.Pause(true);CancelAutomaticStart();}
  private void PowerChanged(object sender,PowerModeChangedEventArgs e)=>Application.Current.Dispatcher.BeginInvoke(()=>{
   if(disposed)return;
-  if(e.Mode==PowerModes.Suspend){suspended=true;recovery.Pause(true);CancelAutomaticStart();Log("系统挂起，已取消排队恢复；保留已有核心。");}
+  if(e.Mode==PowerModes.Suspend){PauseSignal();Log("系统挂起，已取消排队恢复；保留已有核心。");}
   else if(e.Mode==PowerModes.Resume)ResumeSignal();
  });
- internal void ResumeSignal(){if(disposed)return;suspended=false;recovery.Pause(locked);discovery?.Refresh();Log("系统恢复：仅检查现有核心，不强制重启。");if(desired)RequestRecovery("电脑唤醒");else BeginAutomaticStart();}
+ internal void ResumeSignal(){if(disposed)return;suspended=false;recovery.Pause(locked);ApplyPendingSettings();discovery?.Refresh();Log("系统恢复：仅检查现有核心，不强制重启。");if(desired)RequestRecovery("电脑唤醒");else BeginAutomaticStart();}
  private void SessionChanged(object sender,SessionSwitchEventArgs e)=>Application.Current.Dispatcher.BeginInvoke(()=>{
   if(disposed)return;
   if(e.Reason==SessionSwitchReason.SessionLock){locked=true;recovery.Pause(true);CancelAutomaticStart();Log("会话锁定，已暂停排队启动与恢复。");}
-  else if(e.Reason==SessionSwitchReason.SessionUnlock){locked=false;recovery.Pause(suspended);if(desired)RequestRecovery("会话解锁");else BeginAutomaticStart();}
+  else if(e.Reason==SessionSwitchReason.SessionUnlock){locked=false;recovery.Pause(suspended);ApplyPendingSettings();if(desired)RequestRecovery("会话解锁");else BeginAutomaticStart();}
  });
  private async Task<bool> ProbeCore() {
   if(pipe?.IsConnected!=true)return false;
@@ -284,42 +315,46 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
   urgentRecovery|=immediate;
   var request=recovery.Signal();
   await Task.Delay(urgentRecovery?TimeSpan.Zero:recoveryDelay);
-  while(restarting&&!disposed&&desired&&recovery.Current(request,AutoConnect))await Task.Delay(50);
+  while((restarting||(Running&&pipe?.IsConnected!=true&&(DateTime.UtcNow-coreStartedAt).TotalSeconds<10))&&!disposed&&desired&&recovery.Current(request,AutoConnect))await Task.Delay(50);
   if(disposed||!desired||!recovery.Current(request,AutoConnect))return;
   bool online=NetworkInterface.GetAllNetworkInterfaces().Any(n=>n.OperationalStatus==OperationalStatus.Up&&n.NetworkInterfaceType!=NetworkInterfaceType.Loopback);
-  if(!online||!ReadDesktop().Ready){Log(reason+"：网络或桌面尚未就绪，暂不变更核心。");return;}
+  if(!online||!DesktopReady){Log(reason+"：网络或桌面尚未就绪，暂不变更核心。");return;}
   restarting=true;
   try {
    bool responsive=!Running||await ProbeCore();
-   if(disposed||!desired||!recovery.Current(request,AutoConnect))return;
+   if(disposed||!desired||!recovery.Current(request,AutoConnect)||!DesktopReady)return;
    bool changed=Running&&DesiredConfiguration()!=activeConfiguration;
    var action=recovery.Decide(request,AutoConnect,true,online,Running,responsive,changed);
    Log(reason+"：恢复检查="+action+"，进程="+(child?.Id.ToString()??"none"));
    if(action==RecoveryAction.Keep){return;}
    if(action==RecoveryAction.Hold){recovery.Block();Status="共享核心暂未响应";Detail="保留现场，不自动反复重启。请查看连接日志后手动停止并重试。";return;}
-   if(action==RecoveryAction.Start){Start();return;}
+   if(action==RecoveryAction.Start){if(restartPending){WriteConfiguration();Launch();restartPending=false;}return;}
    if(action!=RecoveryAction.Reload)return;
    if(!recovery.Current(request,AutoConnect))return;
-   await ReloadCore(reason,()=>recovery.Current(request,AutoConnect));
+   await ReloadCore(reason,automatic:true);
   }catch(Exception e){recovery.Block();Status="自动恢复已暂停";Detail=e.Message;Log("恢复检查失败："+e.Message);}
   finally{if(recovery.Current(request,AutoConnect))urgentRecovery=false;restarting=false;}
  }
- private async Task ReloadCore(string reason,Func<bool>? stillRequested=null) {
+ private async Task ReloadCore(string reason,bool automatic=false) {
   Log(reason+"：请求连接核心正常退出并重新启动。");
-  var owned=child;var id=++generation;Connected=false;SendStop();session?.Cancel();pipe?.Dispose();pipe=null;
+  var owned=child;var id=++generation;restartPending=true;Connected=false;SendStop();session?.Cancel();pipe?.Dispose();pipe=null;
   if(owned is not null&&!owned.HasExited) {
    var exit=owned.WaitForExitAsync();
    if(await Task.WhenAny(exit,Task.Delay(5000))!=exit){recovery.Block();Status="等待旧共享进程退出";Detail="重载已暂停，避免强制终止后反复启动。";return;}
   }
   owned?.Dispose();child=null;Running=false;
-  if(!disposed&&desired&&generation==id&&(stillRequested?.Invoke()??true)){WriteConfiguration();Launch();}
+  if(!disposed&&desired&&generation==id&&!recovery.Blocked&&DesktopReady&&(!automatic||AutoConnect)){
+   WriteConfiguration();Launch();restartPending=false;settingsPending=false;
+  }else if(desired&&!disposed){Status="等待桌面或恢复设置就绪";Detail="已正常退出旧核心；桌面可用后再继续，停止可取消。";if(settingsPending)ApplyPendingSettings();}
  }
- public async void SaveAndApply() {
-  Save();
-  // A concurrent health check must not silently discard an explicit settings save.
-  while(!disposed&&Running&&desired&&restarting)await Task.Delay(50);
-  if(disposed||!Running||!desired)return;
-  if(DesiredConfiguration()==activeConfiguration)return;
+ public void SaveAndApply(){Save();if(desired){settingsPending=true;ApplyPendingSettings();}}
+ private async void ApplyPendingSettings(){
+  var stopped=stopRevision;
+  while(!disposed&&desired&&restarting&&stopped==stopRevision)await Task.Delay(50);
+  if(disposed||!desired||!settingsPending||stopped!=stopRevision||recovery.Blocked)return;
+  if(!DesktopReady){await Task.Delay(1000);if(stopped==stopRevision)ApplyPendingSettings();return;}
+  if(!Running&&!restartPending)return;
+  if(Running&&DesiredConfiguration()==activeConfiguration){settingsPending=false;return;}
   restarting=true;
   try{await ReloadCore("设置更改");}
   catch(Exception e){recovery.Block();Status="重载失败";Detail=e.Message;Log("设置重载失败："+e.Message);}
@@ -343,7 +378,7 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
  public void Start() {
   CancelAutomaticStart();
   if(disposed)return;
-  if(Running)return;
+  if(Running||restarting)return;
   if(!File.Exists(engine)){MessageBox.Show("安装包中的连接核心不完整。请重新解压整个 LinkDesk 安装包，不要只复制 LinkDesk.exe。","LinkDesk");return;}
   if(Process.GetProcessesByName("deskflow").Any()||Process.GetProcessesByName("deskflow-core").Any()){MessageBox.Show("请先从系统托盘退出原版 Deskflow，然后在 LinkDesk 启动连接。","LinkDesk");return;}
   if(SelectedDevice is null){MessageBox.Show("请先在配对设备中选择并核对一台电脑。","LinkDesk");return;}
@@ -353,7 +388,7 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
   if(!File.Exists(Path.Combine(Path.GetDirectoryName(engine)!,"settings","Deskflow.conf"))){MessageBox.Show("连接核心的便携配置缺失，请重新解压完整安装包。","LinkDesk");return;}
   try {
    VerifyProtectedCore();PrepareIdentity();ConfigureDiscovery();WriteConfiguration();
-   preferences.LastSessionRequested=true;Save();desired=true;recovery.StartSession();recovery.Pause(suspended||locked);Log("用户授权启动共享；用途="+(Server?"共享":"接收"));Launch();
+   identityRejected=false;ResetFailure();preferences.LastSessionRequested=true;Save();desired=true;recovery.StartSession();recovery.Pause(suspended||locked);Log("用户授权启动共享；用途="+(Server?"共享":"接收"));Launch();
   }catch(Exception e){MessageBox.Show("无法启动："+e.Message,"LinkDesk");}
  }
  private void WriteConfiguration() {
@@ -375,14 +410,16 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
   var p=new Process{StartInfo=new ProcessStartInfo(engine){UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true},EnableRaisingEvents=true};
   p.StartInfo.Environment["XDG_STATE_HOME"]=activeProfile;
   p.StartInfo.ArgumentList.Add(Server?"server":"client");p.StartInfo.ArgumentList.Add("--new-instance");p.StartInfo.ArgumentList.Add("--settings");p.StartInfo.ArgumentList.Add(Path.Combine(activeProfile,"LinkDesk.conf"));
-  void Line(object sender,DataReceivedEventArgs e){if(e.Data is null)return;Application.Current.Dispatcher.BeginInvoke(()=>{if(id!=generation)return;if(ObserveConnectionOutput(e.Data))return;Log(e.Data);if(e.Data.Contains("FATAL")||e.Data.Contains("ERROR"))Detail="启动遇到问题，请查看连接日志。";});}
+  void Line(object sender,DataReceivedEventArgs e){if(e.Data is null)return;Application.Current.Dispatcher.BeginInvoke(()=>{if(id!=generation||!desired)return;if(ObserveConnectionOutput(e.Data))return;Log(e.Data);if(e.Data.Contains("FATAL")||e.Data.Contains("ERROR"))Detail="启动遇到问题，请查看连接日志。";});}
   p.OutputDataReceived+=Line;p.ErrorDataReceived+=Line;
   p.Exited+=(_,_)=>Application.Current.Dispatcher.BeginInvoke(()=>{
    if(disposed||id!=generation)return;
+   if(!desired){Running=false;Connected=false;session?.Cancel();pipe?.Dispose();pipe=null;if(!identityRejected){Status="已停止";Detail="点击启动，恢复键鼠共享。";}return;}
+   ResetFailure();restartPending=false;
    int exit=p.ExitCode;Running=false;Connected=false;pipe?.Dispose();pipe=null;session?.Cancel();
    Log("核心退出：pid="+p.Id+" exit="+exit+"；不自动反复拉起进程。");desired=false;recovery.Block();preferences.LastSessionRequested=false;Save();Status=exit==0?"已停止":"共享核心意外停止";Detail="请查看连接日志；确认后手动启动，不自动反复重试。";
   });
-  try {p.Start();child=p;Log("核心启动：pid="+p.Id+" generation="+id+" 用途="+(Server?"共享":"接收"));Running=true;Status=Server?"等待所选设备":"正在连接所选设备";Detail="保持两台电脑联网，连接会自动恢复。";Changed(nameof(Address));p.BeginOutputReadLine();p.BeginErrorReadLine();_=ReadChannel(id,session.Token);}
+  try {p.Start();coreStartedAt=DateTime.UtcNow;child=p;Log("核心启动：pid="+p.Id+" generation="+id+" 用途="+(Server?"共享":"接收"));Running=true;Status=Server?"等待所选设备":"正在连接所选设备";Detail="保持两台电脑联网，连接会自动恢复。";Changed(nameof(Address));p.BeginOutputReadLine();p.BeginErrorReadLine();_=ReadChannel(id,session.Token);}
   catch(Exception e){desired=false;MessageBox.Show(e.Message,"LinkDesk");}
  }
  private async Task ReadChannel(long id,CancellationToken token) {
@@ -397,24 +434,26 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
    while(!token.IsCancellationRequested){var line=await reader.ReadLineAsync(token);if(line is null)break;if(line.StartsWith("versionMismatch=")){await Send("hello="+line[16..]);continue;}await Application.Current.Dispatcher.InvokeAsync(()=>{if(id==generation)Handle(line);});}
   }catch(OperationCanceledException){}catch(Exception e){if(!token.IsCancellationRequested) _=Application.Current.Dispatcher.BeginInvoke(()=>Log("状态通道："+e.Message));}
  }
- private void Handle(string message) {
+ internal void Handle(string message) {
+  if(disposed||!desired)return;
   var parts=message.Split('=',2);var args=parts.Length>1?parts[1]:"";
   switch(parts[0]){
    case "pong":if(args==probeNonce)probe?.TrySetResult(true);break;
    case "connectionState":Connected=args=="Connected";if(Connected&&desired)ConnectionRecovered();Status=Connected?"两台电脑已连接":Server?"等待所选设备":"正在重连所选设备";Detail=Connected?"键盘和鼠标可以在两台电脑间使用。":"网络恢复后会自动重连。";break;
-   case "connectedClients":Connected=args.Length>0;if(Connected&&desired)ConnectionRecovered();Status=Connected?"两台电脑已连接":"等待另一台电脑";Detail=Connected?"已连接："+args:"等待安全连接。";break;
-   case "connectionRefused":Detail=RefusalMessages.Describe(args);break;
+   case "connectedClients":if(!Server)break;Connected=args.Length>0;if(Connected&&desired)ConnectionRecovered();Status=Connected?"两台电脑已连接":"等待另一台电脑";Detail=Connected?"已连接："+args:"等待安全连接。";break;
+   case "connectionRefused":Connected=false;refusalDetail=RefusalMessages.Describe(args);Status="连接被拒绝";Detail=refusalDetail;break;
    case "peerFingerprint":
     var observed=PeerStore.Pin(args);if(observed is null||!seen.Add(observed))break;
-    if(observed!=SelectedDevice?.Fingerprint){Stop();Status="设备身份不一致";Detail="对方指纹与所选设备不同，连接已停止。请先在设备列表重新核对身份。";Log("拒绝身份不一致的连接；没有修改配对。");}break;
+    if(observed!=SelectedDevice?.Fingerprint){Stop();identityRejected=true;Status="设备身份不一致";Detail="对方指纹与所选设备不同，连接已停止。请先在设备列表重新核对身份。";Log("拒绝身份不一致的连接；没有修改配对。");}break;
   }
+  if(!Connected)ShowConnectionFailure();
  }
  public void Toggle()=> (Running? (Action)Stop:Start)();
  public void Stop(){
-  urgentRecovery=false;ResetFailure();CancelAutomaticStart();desired=false;recovery.StopSession();preferences.LastSessionRequested=false;Save();Connected=false;probe?.TrySetResult(false);
+  stopRevision++;restartPending=false;settingsPending=false;urgentRecovery=false;ResetFailure();CancelAutomaticStart();desired=false;recovery.StopSession();preferences.LastSessionRequested=false;Save();Connected=false;probe?.TrySetResult(false);
   var p=child;if(p is null||p.HasExited){Running=false;Status="已停止";return;}
   Log("用户请求停止核心：pid="+p.Id);SendStop();
-  _=Task.Delay(5000).ContinueWith(_=>{try{if(!p.HasExited){LogOnDispatcher("用户停止超时，终止本应用持有的核心：pid="+p.Id);p.Kill();}}catch{}Application.Current.Dispatcher.BeginInvoke(()=>{if(child==p&&!desired){Running=false;Status="已停止";}});});Status="正在停止";
+  _=Task.Delay(5000).ContinueWith(_=>{try{if(!p.HasExited){LogOnDispatcher("用户停止超时，终止本应用持有的核心：pid="+p.Id);p.Kill();}}catch{}Application.Current.Dispatcher.BeginInvoke(()=>{if(child==p&&!desired){Running=false;if(!identityRejected)Status="已停止";}});});Status="正在停止";
  }
  private void LogOnDispatcher(string line)=>Application.Current.Dispatcher.BeginInvoke(()=>Log(line));
  private void SendStop(){try{if(pipe?.IsConnected==true){var bytes=Encoding.UTF8.GetBytes("stop\n");pipe.Write(bytes);pipe.Flush();}}catch{}}

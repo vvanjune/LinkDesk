@@ -99,6 +99,8 @@ final class LinkModel: ObservableObject {
     @Published var issue: String?
     @Published var pairing: String?
     @Published var devices: [PairedDevice] = []
+    @Published var addressID: String?
+    @Published var addressText = ""
     @Published var renameID: String?
     @Published var renameText = ""
     @Published var forgetID: String?
@@ -146,7 +148,7 @@ final class LinkModel: ObservableObject {
     private var failureEscalated = false
     private var failureRevision = UUID()
     private(set) var failureRefreshes = 0
-    private func resetFailure() { failingSince = nil; failureCount = 0; failureEscalated = false; lastRefreshAt = .distantPast; failureRevision = UUID() }
+    private func resetFailure() { connectionFailure = ""; refusalDetail = ""; failingSince = nil; failureCount = 0; failureEscalated = false; lastRefreshAt = .distantPast; failureRevision = UUID() }
     private func connectionRecovered() {
         if let since = failingSince { let seconds = Int(Date().timeIntervalSince(since)); append("连接恢复，本次中断 \(seconds / 60) 分 \(seconds % 60) 秒") }
         resetFailure()
@@ -154,21 +156,36 @@ final class LinkModel: ObservableObject {
     private func observeConnectionOutput(_ line: String) -> Bool {
         guard desired, !closing, !server else { return false }
         let lower = line.lowercased()
-        if lower.contains("connected to secure socket") { handle("connectionState=Connected"); return false }
+        if lower.contains("connected to secure socket") { if connected || !refusalDetail.isEmpty { return false }; title = "正在确认共享连接"; detail = "加密通道已建立，等待共享会话确认。"; return false }
         guard lower.contains("failed to connect to server") || lower.contains("server is dead") else { return false }
+        connectionFailure = lower.contains("refused") ? "当前地址的连接被拒绝，请确认对端已启动共享并允许局域网访问。" : lower.contains("timed out") ? "连接超时，尚不能判断是对端未就绪、网络隔离还是防火墙阻断。" : lower.contains("server is dead") ? "与共享端的连接已中断，正在等待重新连接。" : "暂时无法建立连接，请确认地址和对端共享状态。"
         connected = false; failureCount += 1
         if failingSince == nil { title = "正在重连所选设备"; detail = "当前地址：" + host; failingSince = Date(); append("连接失败开始：" + host); failureRevision = UUID(); watchFailure(failureRevision) }
         return true
     }
     private func watchFailure(_ revision: UUID) {
         guard revision == failureRevision, let since = failingSince, desired, !closing, !server else { return }
-        if running && !restarting && autoConnect && !suspended && !recoveryBlocked {
+        if running && !restarting && !suspended && !recoveryBlocked {
             let now = Date(); let elapsed = now.timeIntervalSince(since)
-            if elapsed >= failureNotice && now.timeIntervalSince(lastRefreshAt) >= 15 { lastRefreshAt = now; failureRefreshes += 1; browser?.refresh() }
+            if autoConnect && elapsed >= failureNotice && now.timeIntervalSince(lastRefreshAt) >= 15 { lastRefreshAt = now; failureRefreshes += 1; browser?.refresh() }
             if elapsed >= failureEscalate && !failureEscalated { failureEscalated = true; append("连接失败持续：" + host + "；请检查对端共享与网络。") }
-            if elapsed >= failureNotice { title = failureEscalated ? "无法连接所选设备" : "正在重新查找所选设备"; detail = "当前地址：" + host + (failureEscalated ? "。请确认另一端已启动共享、两端在同一网络；若对方地址已变，请在“配对设备”重新查找。" : "") }
+            showConnectionFailure()
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in self?.watchFailure(revision) }
+    }
+    var connectionDiagnosis: String {
+        let found: String
+        if let peer = selectedDevice, peer.online {
+            found = peer.role == "client" ? "最近发现对端应用，但它公告为接收端；请核对另一端已切换到共享。" : "最近发现对端应用；发现成功不代表共享连接已建立。"
+        } else { found = allowDiscovery ? "暂未发现所选设备，这不代表 Wi-Fi 已断开。" : "局域网发现已关闭，请核对保存的地址。" }
+        return "当前地址：" + host + "。" + found + " " + connectionFailure + " 若地址已变，可停止共享后在“配对设备”更新地址。"
+    }
+    private func showConnectionFailure() {
+        guard desired, !connected, !restarting, !recoveryBlocked else { return }
+        if !refusalDetail.isEmpty { title = "连接被拒绝"; detail = refusalDetail; return }
+        guard let since = failingSince else { return }
+        title = failureEscalated ? "无法连接所选设备" : Date().timeIntervalSince(since) >= failureNotice ? (autoConnect && allowDiscovery ? "正在重新查找所选设备" : "正在等待重新连接") : "正在重连所选设备"
+        detail = connectionDiagnosis
     }
     private let recoveryDelay: TimeInterval
     private let ipcPath: String?
@@ -181,6 +198,14 @@ final class LinkModel: ObservableObject {
     private var pathSignature: String?
     private var restarting = false
     private var urgentRecovery = false
+    private var restartPending = false
+    private var settingsPending = false
+    private var identityRejected = false
+    private var stopRevision = UUID()
+    private var coreStartedAt = Date.distantPast
+    private var connectionFailure = ""
+    private var refusalDetail = ""
+    private var desktopReady: Bool { !suspended && desktopState().ready && hasDeviceControl() }
     private var closing = false
     private var recoveryBlocked = false
     private var responder: DiscoveryResponder?
@@ -250,10 +275,12 @@ final class LinkModel: ObservableObject {
         }
         networkMonitor.start(queue: DispatchQueue(label: "LinkDesk.Network"))
         let center = NSWorkspace.shared.notificationCenter
-        workspaceObservers.append(center.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in self?.suspended = true; self?.cancelQueuedRecovery() })
+        workspaceObservers.append(center.addObserver(forName: NSWorkspace.sessionDidResignActiveNotification, object: nil, queue: .main) { [weak self] _ in self?.pauseSignal() })
+        workspaceObservers.append(center.addObserver(forName: NSWorkspace.sessionDidBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in self?.resumeSignal() })
+        workspaceObservers.append(center.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in self?.pauseSignal() })
         workspaceObservers.append(center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in self?.resumeSignal() })
         workspaceObservers.append(center.addObserver(forName: NSWorkspace.screensDidSleepNotification, object: nil, queue: .main) { [weak self] _ in self?.displaySleeping = true; self?.cancelAutomaticStart() })
-        workspaceObservers.append(center.addObserver(forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: .main) { [weak self] _ in self?.displaySleeping = false; self?.beginAutomaticStart() })
+        workspaceObservers.append(center.addObserver(forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: .main) { [weak self] _ in self?.displaySleeping = false; self?.applyPendingSettings(); if self?.desired == true { self?.scheduleRecovery("屏幕唤醒") } else { self?.beginAutomaticStart() } })
     }
     func beginAutomaticStart() {
         cancelAutomaticStart()
@@ -270,7 +297,8 @@ final class LinkModel: ObservableObject {
     }
     private func cancelAutomaticStart() { startupRevision = UUID(); startupWork?.cancel(); startupWork = nil }
     private func cancelQueuedRecovery() { cancelAutomaticStart(); recoveryRevision = UUID(); recoveryWork?.cancel() }
-    func resumeSignal() { suspended = false; append("电脑唤醒：检查已有核心，不强制重启。"); if desired { scheduleRecovery("电脑唤醒") } else { beginAutomaticStart() } }
+    func pauseSignal() { suspended = true; cancelQueuedRecovery() }
+    func resumeSignal() { suspended = false; applyPendingSettings(); append("电脑唤醒：检查已有核心，不强制重启。"); if desired { scheduleRecovery("电脑唤醒") } else { beginAutomaticStart() } }
     func networkSignal() { refreshAddresses(); scheduleRecovery("网络变化") }
     private var configurationSignature: String { "\(server)|\(localName)|\(peerName)|\(server ? "" : host)|\(layout)|\(inputSettings)|\(wakeDisplayOnRemoteInput)|\(switchDelay)|\(selectedDevice?.fingerprint ?? "")" }
     private func probeCore(_ completion: @escaping (Bool) -> Void) {
@@ -292,39 +320,26 @@ final class LinkModel: ObservableObject {
     }
     private func recover(_ reason: String, revision: UUID) {
         guard autoConnect, desired, !closing, !suspended, !recoveryBlocked, recoveryRevision == revision else { return }
-        if restarting { DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in self?.recover(reason, revision: revision) }; return }
+        if restarting || (running && !coreReady && Date().timeIntervalSince(coreStartedAt) < 10) { DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in self?.recover(reason, revision: revision) }; return }
         refreshAddresses()
-        guard !addresses.isEmpty, hasDeviceControl(), desktopState().ready else { append(reason + "：网络或桌面尚未就绪，保留核心。"); return }
-        if child == nil && !running { urgentRecovery = false; start(); return }
+        guard !addresses.isEmpty, desktopReady else { append(reason + "：网络或桌面尚未就绪，保留核心。"); return }
+        if restartPending && child == nil && !running { urgentRecovery = false; start(); restartPending = false; return }
         guard let owned = child, owned.isRunning else { desired = false; recoveryBlocked = true; lastSessionRequested = false; defaults.set(false, forKey: "lastSessionRequested"); return }
         restarting = true
         probeCore { [weak self] responsive in
             guard let self = self else { return }
             guard self.autoConnect, self.desired, !self.closing, self.recoveryRevision == revision else { self.restarting = false; return }
             let changed = self.configurationSignature != self.activeConfiguration
+            guard self.desktopReady else { self.restarting = false; return }
+            if !responsive {
+                self.restarting = false; self.recoveryBlocked = true; self.title = "共享核心暂未响应"; self.detail = "保留进程，不自动反复重启。请查看日志后手动停止并重试。"; return
+            }
             if !changed {
-                self.urgentRecovery = false
-                self.restarting = false
-                if responsive { self.append(reason + "：核心正常，保留进程 pid=\(owned.processIdentifier)。") }
-                else { self.recoveryBlocked = true; self.title = "共享核心暂未响应"; self.detail = "保留进程，不自动反复重启。请查看日志后手动停止并重试。" }
+                self.urgentRecovery = false; self.restarting = false
+                self.append(reason + "：核心正常，保留进程 pid=\(owned.processIdentifier)。")
                 return
             }
-            self.append(reason + "：所选配置改变，请求旧核心正常退出。")
-            self.generation = UUID(); let token = self.generation
-            self.channel?.send("stop"); self.channel?.disconnect(); self.channel = nil; self.coreReady = false; self.connected = false
-            DispatchQueue.global(qos: .utility).async {
-                let deadline = Date().addingTimeInterval(5)
-                while owned.isRunning && Date() < deadline { usleep(50_000) }
-                DispatchQueue.main.async {
-                    self.restarting = false
-                    guard self.generation == token else { return }
-                    self.running = owned.isRunning
-                    if owned.isRunning { self.recoveryBlocked = true; self.title = "等待旧共享进程退出"; self.detail = "自动恢复暂停，避免强制终止后反复启动。"; return }
-                    self.child = nil
-                    guard self.autoConnect, self.desired, !self.closing, self.recoveryRevision == revision else { return }
-                    self.urgentRecovery = false; self.start()
-                }
-            }
+            self.reloadCore(reason: reason, automatic: true)
         }
     }
     private func refreshDevices() { devices = peers?.devices ?? [] }
@@ -350,6 +365,15 @@ final class LinkModel: ObservableObject {
             _ = try peers?.observe(PairedDevice(fingerprint: pin, name: manualName, address: manualAddress, platform: manualPlatform, role: server ? "client" : "server"))
             refreshDevices(); chooseDevice(pin)
         } catch { issue = error.localizedDescription }
+    }
+    func updateSelectedAddress(_ id: String, address: String) throws {
+        guard !running, !desired, !restarting else { throw NSError(domain: "LinkDesk", code: 10, userInfo: [NSLocalizedDescriptionKey: "请先停止共享，再更新地址。"]) }
+        guard let peers = peers else { throw NSError(domain: "LinkDesk", code: 11, userInfo: [NSLocalizedDescriptionKey: "设备列表尚未就绪。"]) }
+        let old = selectedDevice?.address ?? ""
+        try peers.updateSelectedAddress(id, address: address.trimmingCharacters(in: .whitespacesAndNewlines))
+        applySelected(restoreInput: false); save(); refreshDevices(); lastSelectedSeen = .distantPast
+        append("手动更新所选设备地址：\(old) → \(host)；配对指纹不变。")
+        title = "设备地址已更新"; detail = "点击启动共享，仍会核对原有配对身份。"
     }
     func renameDevice(_ id: String, alias: String) { do { try peers?.rename(id, alias: alias); refreshDevices() } catch { issue = error.localizedDescription } }
     func forgetDevice(_ id: String) {
@@ -425,17 +449,36 @@ final class LinkModel: ObservableObject {
     var inputSettings: LinkInputSettings {
         LinkInputSettings(command: commandMap, control: controlMap, option: optionMap, shift: shiftMap, invertVertical: invertVertical, invertHorizontal: invertHorizontal, verticalSpeed: verticalSpeed, horizontalSpeed: horizontalSpeed)
     }
-    func saveAndApply() {
-        save()
-        guard running, desired, !restarting, !closing, let owned = child, owned.isRunning else { return }
-        guard configurationSignature != activeConfiguration else { return }
+    func saveAndApply() { save(); if desired { settingsPending = true; applyPendingSettings() } }
+    private func applyPendingSettings() {
+        guard desired, settingsPending, !closing, !recoveryBlocked else { return }
+        if restarting {
+            let revision = stopRevision
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                guard let self = self, self.stopRevision == revision else { return }; self.applyPendingSettings()
+            }
+            return
+        }
+        guard desktopReady else {
+            let revision = stopRevision
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+                guard let self = self, self.stopRevision == revision else { return }; self.applyPendingSettings()
+            }
+            return
+        }
+        guard running || restartPending else { return }
+        if running && configurationSignature == activeConfiguration { settingsPending = false; return }
         reloadCore(reason: "设置已更改")
     }
-    private func reloadCore(reason: String) {
-        guard let owned = child, owned.isRunning else { return }
+    private func reloadCore(reason: String, automatic: Bool = false) {
+        guard let owned = child, owned.isRunning else {
+            restarting = false
+            if restartPending && desired && desktopReady && !closing && !recoveryBlocked && (!automatic || autoConnect) { start(); restartPending = false; settingsPending = false }
+            return
+        }
         restarting = true
         append(reason + "：请求连接核心正常退出并重新启动。")
-        generation = UUID(); let token = generation
+        generation = UUID(); let token = generation; restartPending = true
         channel?.send("stop"); channel?.disconnect(); channel = nil; coreReady = false; connected = false
         DispatchQueue.global(qos: .utility).async {
             let deadline = Date().addingTimeInterval(5)
@@ -446,8 +489,9 @@ final class LinkModel: ObservableObject {
                 guard !owned.isRunning else { self.recoveryBlocked = true; self.title = "等待旧共享进程退出"; self.detail = "自动重载已暂停，避免强制终止后反复启动。"; return }
                 self.child = nil
                 self.running = false
-                guard self.desired, !self.closing else { return }
-                self.start()
+                guard self.desired, !self.closing, !self.recoveryBlocked else { return }
+                guard self.desktopReady, !automatic || self.autoConnect else { self.title = "等待桌面或恢复设置就绪"; self.detail = "已正常退出旧核心；桌面可用后再继续，停止可取消。"; self.applyPendingSettings(); return }
+                self.urgentRecovery = false; self.start(); self.restartPending = false; self.settingsPending = false
             }
         }
     }
@@ -469,8 +513,9 @@ final class LinkModel: ObservableObject {
     }
     func start() {
         cancelAutomaticStart()
-        guard !running, !closing else { return }
-        recoveryBlocked = false
+        guard !running, !closing, !restarting else { return }
+        recoveryBlocked = false; identityRejected = false
+        if !desired { resetFailure() }
         guard selectedDevice != nil else { tab = "devices"; issue = "请先选择并核对一台电脑。"; return }
         applySelected(restoreInput: false)
         guard hasDeviceControl() else {
@@ -521,13 +566,15 @@ final class LinkModel: ObservableObject {
             let data = handle.availableData
             guard !data.isEmpty else { return }
             let text = String(decoding: data, as: UTF8.self)
-            DispatchQueue.main.async { guard let self = self, self.generation == token else { return }; self.readLog(text) }
+            DispatchQueue.main.async { guard let self = self, self.generation == token, self.desired else { return }; self.readLog(text) }
         }
         p.terminationHandler = { [weak self] proc in
             pipe.fileHandleForReading.readabilityHandler = nil
             DispatchQueue.main.async {
                 guard let self = self, self.generation == token else { return }
                 self.running = false; self.connected = false; self.channel?.disconnect(); self.channel = nil
+                if !self.desired { if !self.identityRejected { self.title = "已停止"; self.detail = "点击启动，恢复键鼠共享。" }; return }
+                self.resetFailure(); self.restartPending = false
                 self.desired = false; self.lastSessionRequested = false; self.defaults.set(false, forKey: "lastSessionRequested"); self.recoveryBlocked = true; self.finishProbe(false)
                 self.title = proc.terminationStatus == 0 ? "已停止" : "共享核心意外停止"
                 self.detail = "请查看连接日志；确认后手动启动，不自动反复重试。"
@@ -535,17 +582,17 @@ final class LinkModel: ObservableObject {
             }
         }
         do {
-            try p.run(); child = p; append("核心启动：pid=\(p.processIdentifier)"); running = true; title = "正在启动连接"; detail = "正在准备加密连接。"
+            try p.run(); coreStartedAt = Date(); child = p; append("核心启动：pid=\(p.processIdentifier)"); running = true; title = "正在启动连接"; detail = "正在准备加密连接。"
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [self] in
-                guard self.running, self.generation == token else { return }
+                guard self.running, self.desired, self.generation == token else { return }
                 let channel = CoreChannel(path: self.ipcPath); self.channel = channel
                 channel.connect(onMessage: { [weak self] message in guard self?.generation == token else { return }; self?.handle(message) }, onClosed: { [weak self] in
-                    guard let self = self, self.generation == token, self.running else { return }
+                    guard let self = self, self.generation == token, self.running, self.desired else { return }
                     self.coreReady = false; self.connected = false; self.scheduleRecovery("共享状态通道断开")
                 })
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
-                guard self.generation == token, self.running, !self.coreReady else { return }
+                guard self.generation == token, self.running, self.desired, !self.coreReady else { return }
                 self.recoveryBlocked = true; self.title = "共享状态通道暂未响应"
                 self.detail = "保留进程，请检查权限与日志后手动停止重试。"
                 self.append("启动超过 10 秒且未收到核心状态，暂停自动恢复，不强制终止。")
@@ -559,14 +606,14 @@ final class LinkModel: ObservableObject {
         do { try check.run(); check.waitUntilExit(); return check.terminationStatus == 0 } catch { return false }
     }
     func stop() {
-        urgentRecovery = false; resetFailure()
+        stopRevision = UUID(); restartPending = false; settingsPending = false; urgentRecovery = false; resetFailure()
         desired = false; lastSessionRequested = false; defaults.set(false, forKey: "lastSessionRequested"); connected = false
         cancelQueuedRecovery(); finishProbe(false)
         guard let child = child, child.isRunning else { running = false; return }
         channel?.send("stop")
         DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
             if child.isRunning { self.append("用户停止超时，终止持有的核心：pid=\(child.processIdentifier)"); child.terminate() }
-            if self.child === child && !self.desired { self.running = false; self.title = "已停止"; self.detail = "点击启动，恢复键鼠共享。" }
+            if self.child === child && !self.desired { self.running = false; if !self.identityRejected { self.title = "已停止"; self.detail = "点击启动，恢复键鼠共享。" } }
         }
         title = "正在停止"; detail = "正在结束共享连接。"
     }
@@ -583,6 +630,7 @@ final class LinkModel: ObservableObject {
         channel?.disconnect()
     }
     func readLog(_ text: String) {
+        guard desired, !closing else { return }
         partial += text
         while let index = partial.firstIndex(of: "\n") {
             let line = String(partial[..<index]); partial.removeSubrange(...index); if observeConnectionOutput(line) { continue }; append(line)
@@ -595,6 +643,7 @@ final class LinkModel: ObservableObject {
         }
     }
     func handle(_ message: String) {
+        guard desired, !closing else { return }
         let pieces = message.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
         let command = String(pieces[0]); let args = pieces.count > 1 ? String(pieces[1]) : ""
         switch command {
@@ -605,15 +654,17 @@ final class LinkModel: ObservableObject {
             title = connected ? "两台电脑已连接" : (running ? (server ? "等待所选设备" : "正在重连") : "已停止")
             detail = connected ? "可以把指针移到另一台电脑，键盘会跟随。" : "保持两台电脑联网，连接会自动恢复。"
         case "connectedClients":
+            guard server else { return }
             connected = !args.isEmpty; if connected && desired { connectionRecovered() }; title = connected ? "两台电脑已连接" : "等待所选设备"
             detail = connected ? "已连接：\(args) · 加密传输" : "另一台电脑恢复联网后会自动连接。"
         case "peerFingerprint":
             guard let pin = PeerStore.pin(args), !handledFingerprints.contains(pin) else { return }
             handledFingerprints.insert(pin)
-            if pin != selectedDevice?.fingerprint { stop(); recoveryBlocked = true; title = "设备身份不一致"; detail = "对方指纹与所选设备不同，连接已停止。请先在设备列表重新核对身份。"; append("拒绝身份不一致的连接；没有修改配对。") }
-        case "connectionRefused": detail = LinkConfiguration.refusalMessage(args)
+            if pin != selectedDevice?.fingerprint { stop(); identityRejected = true; recoveryBlocked = true; title = "设备身份不一致"; detail = "对方指纹与所选设备不同，连接已停止。请先在设备列表重新核对身份。"; append("拒绝身份不一致的连接；没有修改配对。") }
+        case "connectionRefused": connected = false; refusalDetail = LinkConfiguration.refusalMessage(args); title = "连接被拒绝"; detail = refusalDetail
         default: break
         }
+        if !connected { showConnectionFailure() }
     }
     func trustPeer() {
         guard let id = pendingPairID, let value = pairing, PeerStore.pin(value) == id else { return }
@@ -792,6 +843,7 @@ struct RootView: View {
                         Button(device.paired ? "选择连接" : "核对指纹并配对") { model.chooseDevice(device.id) }.buttonStyle(.borderedProminent).tint(accent)
                         if device.paired {
                             Button("重命名") { model.renameText = device.alias.isEmpty ? device.name : device.alias; model.renameID = device.id }.buttonStyle(.bordered)
+                            if model.selectedDevice?.id == device.id { Button("更新地址") { model.addressText = device.address; model.addressID = device.id }.buttonStyle(.bordered) }
                             Button("忘记设备") { model.forgetID = device.id }.buttonStyle(.borderless).foregroundStyle(.secondary)
                         }
                         Spacer()
@@ -812,6 +864,17 @@ struct RootView: View {
         }.padding(24).background(.white.opacity(0.7), in: RoundedRectangle(cornerRadius: 20))
         .sheet(isPresented: Binding(get: { model.renameID != nil }, set: { if !$0 { model.renameID = nil } })) {
             VStack(alignment: .leading, spacing: 18) { Text("设备备注名称").font(.title2.bold()); TextField("备注名称", text: $model.renameText).textFieldStyle(.roundedBorder); Text("只改变本机列表中的备注，指纹和对方名称保持不变。").font(.caption).foregroundStyle(.secondary); HStack { Button("取消") { model.renameID = nil }; Spacer(); Button("保存") { if let id = model.renameID { model.renameDevice(id, alias: model.renameText) }; model.renameID = nil }.buttonStyle(.borderedProminent).tint(accent) } }.padding(28).frame(width: 420)
+        }
+        .sheet(isPresented: Binding(get: { model.addressID != nil }, set: { if !$0 { model.addressID = nil } })) {
+            VStack(alignment: .leading, spacing: 18) {
+                Text("更新设备地址").font(.title2.bold())
+                TextField("对方 IP 地址或主机名", text: $model.addressText).textFieldStyle(.roundedBorder)
+                Text("填写对方连接页显示的地址。配对身份不变，连接时仍会核对原有指纹；自动发现仍可更新地址。").font(.caption).foregroundStyle(.secondary)
+                HStack { Button("取消") { model.addressID = nil }; Spacer(); Button("保存地址") {
+                    do { if let id = model.addressID { try model.updateSelectedAddress(id, address: model.addressText) }; model.addressID = nil }
+                    catch { model.issue = error.localizedDescription }
+                }.buttonStyle(.borderedProminent).tint(accent) }
+            }.padding(28).frame(width: 440)
         }
         .alert("忘记这台设备？", isPresented: Binding(get: { model.forgetID != nil }, set: { if !$0 { model.forgetID = nil } })) {
             Button("取消", role: .cancel) { model.forgetID = nil }; Button("忘记设备", role: .destructive) { if let id = model.forgetID { model.forgetDevice(id) }; model.forgetID = nil }

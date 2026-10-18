@@ -23,5 +23,11 @@ for data in reader:
  if os.path.exists(trace+'.crash'):sys.exit(23)
  if line.startswith('hello='):client.sendall(b'hello=fixture\n' + (b'connectionState=Disconnected\n' if os.path.exists(trace+'.linkfail') else b'connectionState=Connected\n'))
  if os.path.exists(trace+'.hold'):continue
- if line.startswith('ping='):client.sendall(('pong='+line[5:]+'\n').encode())
- if line=='stop':sys.exit(0)
+ if line.startswith('ping='):
+  open(trace+'.probing','w').close()
+  if os.path.exists(trace+'.slowping'):time.sleep(.4)
+  client.sendall(('pong='+line[5:]+'\n').encode())
+ if line=='stop':
+  open(trace+'.stopping','w').close()
+  if os.path.exists(trace+'.slowstop'):time.sleep(.5)
+  sys.exit(0)

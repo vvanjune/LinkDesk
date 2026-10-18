@@ -12,6 +12,7 @@ class RecoveryIntentTests {
   Check(state.Decide(request,true,true,true,true,true,false)==RecoveryAction.Keep,"healthy wake/network event restarted a core");
   Check(state.Decide(request,true,true,true,true,true,true)==RecoveryAction.Reload,"genuine selected endpoint change did not reload");
   Check(state.Decide(request,true,true,true,true,false,false)==RecoveryAction.Hold,"unresponsive core caused an automatic kill/relaunch");
+  Check(state.Decide(request,true,true,true,true,false,true)==RecoveryAction.Hold,"changed configuration restarted unresponsive core");
   Check(state.Decide(request,false,true,true,false,false,false)==RecoveryAction.None,"disabled recovery restarted a core");
   Check(state.Decide(request,true,false,true,false,false,false)==RecoveryAction.Wait,"locked/unready desktop started a core");
   Check(state.Decide(request,true,true,false,false,false,false)==RecoveryAction.Wait,"no network started a core");

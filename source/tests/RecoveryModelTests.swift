@@ -75,6 +75,54 @@ import CryptoKit
   watch.readLog("failed to connect to server\n"); runLoop(0.7)
   precondition(launches().count == beforeFailure + 1 && watch.failureRefreshes == refreshCount)
   watch.shutdown()
+  var desktopReady = true
+  let race = LinkModel(defaults: defaults, profile: root, engine: core, observeSystemEvents: false, hasDeviceControl: {true}, desktopState: {MacDesktopSnapshot(ready: desktopReady, signature: "fixture-display")}, foreignCore: {false}, recoveryDelay: 0.03, ipcPath: root.appendingPathComponent("socket").path, failureNotice: 0.1, failureEscalate: 0.2)
+  func flag(_ suffix: String) throws { try Data().write(to: root.appendingPathComponent("launches." + suffix)) }
+  func clear(_ suffix: String) { try? FileManager.default.removeItem(at: root.appendingPathComponent("launches." + suffix)) }
+  func exists(_ suffix: String) -> Bool { FileManager.default.fileExists(atPath: root.appendingPathComponent("launches." + suffix).path) }
+  race.start(); until({race.connected})
+  race.handle("connectedClients="); precondition(race.connected, "server-only IPC cleared receiver state")
+  race.handle("connectionState=Disconnected"); race.readLog("connected to secure socket\n")
+  precondition(!race.connected, "TLS transport alone reported a connected sharing session")
+  race.handle("connectionState=Connected")
+  race.readLog("failed to connect to server: Connection refused\n")
+  race.handle("connectionRefused=incompatible"); let refusal = race.detail
+  race.handle("connectionState=Disconnected"); runLoop(0.3)
+  precondition(race.title == "连接被拒绝" && race.detail == refusal, "watchdog overwrote specific refusal")
+  race.handle("connectionState=Connected")
+  clear("probing"); try flag("slowping"); let beforeSave = launches().count
+  race.networkSignal(); until({exists("probing")}); race.invertHorizontal.toggle(); race.saveAndApply()
+  until({launches().count == beforeSave + 1 && race.connected}); clear("slowping")
+  race.saveAndApply(); runLoop(0.2); precondition(launches().count == beforeSave + 1, "save during probe was lost or applied twice")
+  // Pause after graceful stop has started; explicit settings remain pending even with automatic recovery off.
+  race.autoConnect = false; try flag("slowstop"); clear("stopping"); let beforePause = launches().count
+  race.invertVertical.toggle(); race.saveAndApply(); until({exists("stopping")})
+  desktopReady = false; race.pauseSignal(); until({!race.running}); runLoop(0.2)
+  precondition(launches().count == beforePause, "reload launched while desktop paused")
+  desktopReady = true; race.resumeSignal(); until({race.connected && launches().count == beforePause + 1})
+  race.autoConnect = true; clear("stopping"); let beforeStorm = launches().count
+  race.observeDevice(PairedDevice(fingerprint: pin, name: "RenamedPeer", address: "127.0.0.4", platform: "Windows", role: "server", lastSeen: Date().timeIntervalSince1970))
+  until({exists("stopping")}); for _ in 0..<100 { race.networkSignal() }
+  race.observeDevice(PairedDevice(fingerprint: pin, name: "RenamedPeer", address: "127.0.0.5", platform: "Windows", role: "server", lastSeen: Date().timeIntervalSince1970))
+  until({race.connected && launches().count == beforeStorm + 1}); runLoop(0.5)
+  precondition(launches().count == beforeStorm + 1, "network storm caused duplicate reload")
+  let config = root.appendingPathComponent("connections/" + pin + "/LinkDesk.conf")
+  let writtenConfig = try String(contentsOf: config, encoding: .utf8); precondition(writtenConfig.contains("remoteHost=127.0.0.5"))
+  race.stop(); race.handle("connectionState=Connected"); race.handle("connectedClients=late"); race.readLog("connected to secure socket\n")
+  precondition(!race.connected && race.title != "两台电脑已连接", "late message undid stop status")
+  until({!race.running}); clear("slowstop")
+  let trust = root.appendingPathComponent("connections/" + pin + "/tls/trusted-servers")
+  let trustBefore = try Data(contentsOf: trust)
+  do { try race.updateSelectedAddress(pin, address: "127.0.0.6\ninjected=1"); preconditionFailure("accepted unsafe address") } catch { }
+  do { try race.updateSelectedAddress(String(repeating: "b", count: 64), address: "127.0.0.6"); preconditionFailure("edited unselected identity") } catch { }
+  try race.updateSelectedAddress(pin, address: "127.0.0.6")
+  let saved = try PeerStore(profile: root)
+  precondition(saved.selected?.address == "127.0.0.6" && saved.selected?.fingerprint == pin && saved.selected?.paired == true)
+  let trustAfter = try Data(contentsOf: trust); precondition(trustAfter == trustBefore)
+  race.start(); until({race.connected}); race.handle("peerFingerprint=" + String(repeating: "b", count: 64))
+  until({!race.running}); race.handle("connectionState=Connected")
+  precondition(race.title == "设备身份不一致" && !race.connected, "core exit erased identity rejection")
+  race.shutdown()
   let finalLaunchCount = launches().count
   defaults.set(true, forKey: "autoStartOnLaunch"); defaults.set(true, forKey: "lastSessionRequested")
   let queued = LinkModel(defaults: defaults, profile: root, engine: core, observeSystemEvents: false, hasDeviceControl: {true}, desktopState: {MacDesktopSnapshot(ready: true, signature: "fixture-display")}, foreignCore: {false}, recoveryDelay: 0.03)
@@ -83,6 +131,6 @@ import CryptoKit
   precondition(!stable.observe(snapshot,at:now)); precondition(stable.observe(snapshot,at:now.addingTimeInterval(5)))
   precondition(!stable.observe(MacDesktopSnapshot(ready:false,signature:""),at:now.addingTimeInterval(6)))
   precondition(!stable.observe(snapshot,at:now.addingTimeInterval(7)))
-  print("Mac actual model checks passed: safe upgrade defaults, 100 network signals, healthy process retention, graceful endpoint reload, manual stop, no hung/crashed relaunch, queued startup cancellation and desktop stability.")
+  print("Mac actual model checks passed: safe upgrade defaults, 100 network signals, healthy process retention, graceful endpoint reload, manual stop, no hung/crashed relaunch, queued startup cancellation desktop stability, late messages, refusal priority, concurrent saves, pause during reload, network storms and address-only trust preservation.")
  }
 }

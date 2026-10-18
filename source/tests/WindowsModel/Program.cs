@@ -67,6 +67,37 @@ class Program {
     for(int i=0;i<100;i++){watch.NetworkSignal();watch.ResumeSignal();}await Task.Delay(700);
     Check(Launches().Length==beforeFailure+1&&watch.FailureRefreshes==refreshCount,"stopped watchdog resurrected session");
    }
+   bool desktopReady=true;
+   using(var race=new LinkModel(profile,Path.GetFullPath(core),false,()=>new(desktopReady,"fixture-display"),TimeSpan.FromMilliseconds(30),TimeSpan.FromMilliseconds(100),TimeSpan.FromMilliseconds(200))){
+    race.Start();await Until(()=>race.Connected);
+    race.Handle("connectedClients=");Check(race.Connected,"server-only IPC cleared receiver state");
+    race.Handle("connectionState=Disconnected");race.ObserveConnectionOutput("connected to secure socket");Check(!race.Connected,"TLS transport reported sharing connected");race.Handle("connectionState=Connected");
+    race.ObserveConnectionOutput("failed to connect to server: Connection refused");race.Handle("connectionRefused=incompatible");var refusal=race.Detail;
+    race.Handle("connectionState=Disconnected");await Task.Delay(300);Check(race.Status=="连接被拒绝"&&race.Detail==refusal,"watchdog overwrote refusal");race.Handle("connectionState=Connected");
+    File.Delete(trace+".probing");File.WriteAllText(trace+".slowping","");int beforeSave=Launches().Length;
+    race.NetworkSignal();await Until(()=>File.Exists(trace+".probing"));race.InvertHorizontal=!race.InvertHorizontal;race.SaveAndApply();
+    await Until(()=>Launches().Length==beforeSave+1&&race.Connected);File.Delete(trace+".slowping");race.SaveAndApply();await Task.Delay(200);
+    Check(Launches().Length==beforeSave+1,"save during probe lost or duplicated");
+    race.AutoConnect=false;File.WriteAllText(trace+".slowstop","");File.Delete(trace+".stopping");int beforePause=Launches().Length;
+    race.InvertVertical=!race.InvertVertical;race.SaveAndApply();await Until(()=>File.Exists(trace+".stopping"));desktopReady=false;race.PauseSignal();
+    await Until(()=>!race.Running);await Task.Delay(200);Check(Launches().Length==beforePause,"reload launched while paused");
+    desktopReady=true;race.ResumeSignal();await Until(()=>race.Connected&&Launches().Length==beforePause+1);
+    race.AutoConnect=true;File.Delete(trace+".stopping");int beforeStorm=Launches().Length;
+    race.ObserveDiscovered(new PairedDevice{Fingerprint=pin,Name="RenamedPeer",Address="127.0.0.4",Role="server",Platform="Windows"});
+    await Until(()=>File.Exists(trace+".stopping"));for(int i=0;i<100;i++)race.NetworkSignal();
+    race.ObserveDiscovered(new PairedDevice{Fingerprint=pin,Name="RenamedPeer",Address="127.0.0.5",Role="server",Platform="Windows"});
+    await Until(()=>race.Connected&&Launches().Length==beforeStorm+1);await Task.Delay(500);Check(Launches().Length==beforeStorm+1,"network storm caused duplicate reload");
+    Check(File.ReadAllText(Path.Combine(profile,"connections",pin,"LinkDesk.conf")).Contains("remoteHost=127.0.0.5"),"reload used stale address");
+    race.Stop();race.Handle("connectionState=Connected");race.Handle("connectedClients=late");race.ObserveConnectionOutput("connected to secure socket");
+    Check(!race.Connected&&race.Status!="两台电脑已连接","late message undid stop");await Until(()=>!race.Running);File.Delete(trace+".slowstop");
+    var trust=Path.Combine(profile,"connections",pin,"tls","trusted-servers");var trustBefore=File.ReadAllText(trust);
+    try{race.UpdateSelectedAddress(pin,"127.0.0.6\ninjected=1");throw new Exception("unsafe address accepted");}catch(ArgumentException){}
+    try{race.UpdateSelectedAddress(new string('b',64),"127.0.0.6");throw new Exception("unselected identity edited");}catch(InvalidOperationException){}
+    race.UpdateSelectedAddress(pin,"127.0.0.6");var saved=new PeerStore(profile);
+    Check(saved.Selected?.Address=="127.0.0.6"&&saved.Selected?.Fingerprint==pin&&saved.Selected.Paired&&File.ReadAllText(trust)==trustBefore,"address edit changed identity or trust");
+    race.Start();await Until(()=>race.Connected);race.Handle("peerFingerprint="+new string('b',64));await Until(()=>!race.Running);race.Handle("connectionState=Connected");
+    Check(race.Status=="设备身份不一致"&&!race.Connected,"exit erased identity rejection");
+   }
    int finalLaunchCount=Launches().Length;
    // Recreate a remembered session without ever waiting for the startup delay.
    var prefs=JsonSerializer.Deserialize<Preferences>(File.ReadAllText(Path.Combine(profile,"preferences.json")))!;prefs.AutoStartOnLaunch=true;prefs.LastSessionRequested=true;

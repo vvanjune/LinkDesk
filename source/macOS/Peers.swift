@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 struct PairedDevice: Codable, Identifiable {
     var fingerprint: String
@@ -117,6 +118,18 @@ final class PeerStore {
     func select(_ id: String) throws {
         guard database.devices.contains(where: { $0.id == id && $0.paired }) else { return }
         database.selectedID = id; try save()
+    }
+    func updateSelectedAddress(_ id: String, address: String) throws {
+        guard selected?.id == id, let index = database.devices.firstIndex(where: { $0.id == id && $0.paired }) else {
+            throw NSError(domain: "LinkDesk.Peers", code: 4, userInfo: [NSLocalizedDescriptionKey: "只能更新当前已选择的配对设备。"])
+        }
+        var ipv6 = in6_addr()
+        let raw = address.hasPrefix("[") && address.hasSuffix("]") ? String(address.dropFirst().dropLast()) : address
+        let valid = address.contains(":") ? inet_pton(AF_INET6, raw, &ipv6) == 1 : address.range(of: "^[A-Za-z0-9_](?:[A-Za-z0-9_.-]*[A-Za-z0-9_])?\\.?$", options: .regularExpression) != nil
+        guard LinkConfiguration.validHost(address), valid else { throw NSError(domain: "LinkDesk.Peers", code: 5, userInfo: [NSLocalizedDescriptionKey: "请输入有效的 IP 地址或主机名，不含端口、路径或空格。"]) }
+        let previous = database.devices[index]
+        database.devices[index].address = address; database.devices[index].lastSeen = 0
+        do { try save() } catch { database.devices[index] = previous; throw error }
     }
     func rename(_ id: String, alias: String) throws {
         guard let index = database.devices.firstIndex(where: { $0.id == id && $0.paired }) else { return }

@@ -20,8 +20,8 @@ public sealed class RecoveryIntent {
   if(!Current(revision,automatic))return RecoveryAction.None;
   if(!desktopReady||!networkReady)return RecoveryAction.Wait;
   if(!running)return RecoveryAction.Start;
-  if(configurationChanged)return RecoveryAction.Reload;
-  return responsive?RecoveryAction.Keep:RecoveryAction.Hold;
+  if(!responsive)return RecoveryAction.Hold;
+  return configurationChanged?RecoveryAction.Reload:RecoveryAction.Keep;
  }
 }
 

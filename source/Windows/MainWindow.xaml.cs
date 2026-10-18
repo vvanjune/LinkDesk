@@ -28,6 +28,17 @@ public partial class MainWindow : Window {
   stack.Children.Add(new System.Windows.Controls.TextBlock{Text="只改变本机列表中的备注，指纹保持不变。",TextWrapping=TextWrapping.Wrap});stack.Children.Add(box);
   var save=new System.Windows.Controls.Button{Content="保存",Padding=new Thickness(20,8,20,8),HorizontalAlignment=HorizontalAlignment.Right};save.Click+=(_,_)=>{Model.RenameDevice(id,box.Text);dialog.Close();};stack.Children.Add(save);dialog.Content=stack;dialog.ShowDialog();
  }
+ private void UpdateDeviceAddress(object s,RoutedEventArgs e){
+  if(s is not System.Windows.Controls.Button {Tag:string id})return;
+  if(Model.SelectedDevice?.Id!=id){MessageBox.Show("请先选择这台已配对设备，再更新地址。","LinkDesk");return;}
+  var dialog=new Window{Owner=this,Title="更新设备地址",Width=460,SizeToContent=SizeToContent.Height,ResizeMode=ResizeMode.NoResize,WindowStartupLocation=WindowStartupLocation.CenterOwner};
+  var stack=new System.Windows.Controls.StackPanel{Margin=new Thickness(24)};
+  stack.Children.Add(new System.Windows.Controls.TextBlock{Text="填写对方连接页显示的 IP 地址或主机名。配对身份不变，连接时仍会核对原有指纹；自动发现仍可更新地址。",TextWrapping=TextWrapping.Wrap});
+  var box=new System.Windows.Controls.TextBox{Text=Model.Host,Margin=new Thickness(0,16,0,16),Padding=new Thickness(10)};stack.Children.Add(box);
+  var save=new System.Windows.Controls.Button{Content="保存地址",HorizontalAlignment=HorizontalAlignment.Right,Padding=new Thickness(20,8,20,8)};
+  save.Click+=(_,_)=>{try{Model.UpdateSelectedAddress(id,box.Text);dialog.Close();}catch(Exception error){MessageBox.Show(dialog,error.Message,"地址未更新");}};
+  stack.Children.Add(save);dialog.Content=stack;dialog.ShowDialog();
+ }
  private void ShowLogs(object s,RoutedEventArgs e)=>Page("logs");
  private void ShowInput(object s,RoutedEventArgs e)=>Page("input");
  private void MacMapping(object s,RoutedEventArgs e)=>Model.MappingPreset(true);

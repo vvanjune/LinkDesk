@@ -26,6 +26,14 @@ macOS watches NWPathMonitor and wake notifications; Windows watches NetworkAddre
 
 Role advertisements can lag behind a mode change. They are device-list metadata: they never block a selected paired identity from starting or stop an established TLS connection. The core uses the explicitly configured local mode; its actual connection determines compatibility. Saving or starting refreshes the local announcement, without restarting unchanged discovery on each observed packet. Fingerprint validation and selected-only TLS scopes remain mandatory.
 
+### Recovery and address editing follow-up
+
+Stopped sessions ignore late core state messages; a TLS socket message alone no longer reports a connected sharing session. Specific connection refusals remain visible during retry monitoring. Receiver diagnostics distinguish recent discovery, a peer advertising receive mode, disabled discovery and connection timeout/refusal without assuming Wi-Fi or firewall is the cause.
+
+Settings saved during recovery are retained. Reloads recheck desktop/session readiness after the old core exits; pending explicit settings resume when ready even if automatic network recovery is off. New cores get time to establish IPC before health checks classify them as unresponsive. An unresponsive core is preserved even if its selected configuration changed.
+
+After stopping sharing, select a paired device and use **更新地址** to enter its IP address or hostname. This changes only its remembered endpoint, not its fingerprint or trust. Discovery can still update this address later. The next connection must authenticate the same paired identity.
+
 ## Input
 
 Modifier mapping is applied by the sharing device; scroll direction and speed by the receiving device. Settings follow the selected peer. New cross-platform pairings exchange Command/Windows and Ctrl/Control; same-platform pairings keep modifiers unchanged. Migrated custom settings are retained. Local input and Mos preferences are untouched. No switching hotkeys were added.
