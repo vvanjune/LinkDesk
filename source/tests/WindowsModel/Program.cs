@@ -51,6 +51,22 @@ class Program {
    model.InvertVertical=!model.InvertVertical;model.SaveAndApply();model.Stop();
    await Until(()=>!model.Running);await Task.Delay(300);
    Check(Launches().Length==beforeEdit+1,"stop during settings reload restarted core");
+   using(var watch=new LinkModel(profile,Path.GetFullPath(core),false,()=>new(true,"fixture-display"),TimeSpan.FromSeconds(30),TimeSpan.FromMilliseconds(300),TimeSpan.FromMilliseconds(600))){
+    watch.Start();await Until(()=>watch.Connected);int beforeFailure=Launches().Length;
+    File.WriteAllText(trace+".linkfail","");await Until(()=>watch.Status=="无法连接所选设备");await Task.Delay(300);
+    Check(Launches().Length==beforeFailure&&watch.Running&&!watch.Connected&&watch.FailureRefreshes==1,"watchdog restarted core or failed to refresh");
+    Check(watch.Logs.Count(x=>x.Contains("连接失败开始"))==1&&watch.Logs.Count(x=>x.Contains("连接失败持续"))==1,"failure logs repeated");
+    watch.ObserveDiscovered(new PairedDevice{Fingerprint=pin,Name="RenamedPeer",Address="127.0.0.2",Role="server",Platform="Windows"});
+    await Task.Delay(200);Check(Launches().Length==beforeFailure,"name change bypassed debounce");
+    watch.ObserveDiscovered(new PairedDevice{Fingerprint=pin,Name="RenamedPeer",Address="127.0.0.3",Role="server",Platform="Windows"});
+    await Until(()=>Launches().Length==beforeFailure+1,1000);
+    Check(watch.Logs.Any(x=>x.Contains("所选设备地址更新：127.0.0.2 → 127.0.0.3")),"address log missing");
+    await Task.Delay(1500);File.Delete(trace+".linkfail");await Until(()=>watch.Connected&&watch.Status=="两台电脑已连接");
+    Check(watch.Logs.Count(x=>x.Contains("连接恢复"))==1,"recovery log missing/repeated");
+    watch.Stop();await Until(()=>!watch.Running);int refreshCount=watch.FailureRefreshes;
+    for(int i=0;i<100;i++){watch.NetworkSignal();watch.ResumeSignal();}await Task.Delay(700);
+    Check(Launches().Length==beforeFailure+1&&watch.FailureRefreshes==refreshCount,"stopped watchdog resurrected session");
+   }
    int finalLaunchCount=Launches().Length;
    // Recreate a remembered session without ever waiting for the startup delay.
    var prefs=JsonSerializer.Deserialize<Preferences>(File.ReadAllText(Path.Combine(profile,"preferences.json")))!;prefs.AutoStartOnLaunch=true;prefs.LastSessionRequested=true;

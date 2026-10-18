@@ -51,6 +51,37 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
  private readonly bool observeSystemEvents;
  private readonly Func<DesktopSnapshot> desktopState;
  private readonly TimeSpan recoveryDelay;
+ private readonly TimeSpan failureNotice, failureEscalate;
+ private DateTime? failingSince;
+ private DateTime lastRefreshAt=DateTime.MinValue;
+ private int failureCount;
+ private bool failureEscalated;
+ private long failureRevision;
+ internal int FailureRefreshes {get;private set;}
+ private void ResetFailure(){failingSince=null;failureCount=0;failureEscalated=false;lastRefreshAt=DateTime.MinValue;failureRevision++;}
+ private void ConnectionRecovered(){
+  if(failingSince is {} since){var elapsed=DateTime.UtcNow-since;Log($"连接恢复，本次中断 {(int)elapsed.TotalMinutes} 分 {elapsed.Seconds} 秒");}
+  ResetFailure();
+ }
+ private bool ObserveConnectionOutput(string line){
+  if(disposed||!desired||Server)return false;
+  if(line.Contains("connected to secure socket",StringComparison.OrdinalIgnoreCase)){Handle("connectionState=Connected");return false;}
+  if(!line.Contains("failed to connect to server",StringComparison.OrdinalIgnoreCase)&&!line.Contains("server is dead",StringComparison.OrdinalIgnoreCase))return false;
+  Connected=false;failureCount++;
+  if(failingSince is null){Status="正在重连所选设备";Detail="当前地址："+Host;failingSince=DateTime.UtcNow;Log("连接失败开始："+Host);_=WatchFailure(++failureRevision);}
+  return true;
+ }
+ private async Task WatchFailure(long revision){
+  while(revision==failureRevision&&failingSince is {} since&&!disposed&&desired&&!Server){
+   if(Running&&!restarting&&AutoConnect&&!recovery.Paused&&!recovery.Blocked){
+    var now=DateTime.UtcNow;var elapsed=now-since;
+    if(elapsed>=failureNotice&&(now-lastRefreshAt).TotalSeconds>=15){lastRefreshAt=now;FailureRefreshes++;discovery?.Refresh();}
+    if(elapsed>=failureEscalate&&!failureEscalated){failureEscalated=true;Log("连接失败持续："+Host+"；请检查对端共享与网络。");}
+    if(elapsed>=failureNotice){Status=failureEscalated?"无法连接所选设备":"正在重新查找所选设备";Detail=failureEscalated?"当前地址："+Host+"。请确认另一端已启动共享、两端在同一网络；若对方地址已变，请在“配对设备”重新查找。":"当前地址："+Host;}
+   }
+   await Task.Delay(100);
+  }
+ }
  private readonly RecoveryIntent recovery = new();
  private CancellationTokenSource? startup;
  internal Task AutomaticStartTask {get;private set;}=Task.CompletedTask;
@@ -65,6 +96,7 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
  private bool desired;
  private bool disposed;
  private bool restarting;
+ private bool urgentRecovery;
  private DiscoveryClient? discovery;
  private DiscoveryResponder? announcement;
  private PeerStore? peers;
@@ -102,7 +134,7 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
  public bool CanManualHost=>CanEdit&&!Server;
  public string LocalFingerprint {get;private set;}="正在准备本机身份…";
  private string discoveryStatus="正在查找局域网设备";
- public string DiscoveryStatus {get=>discoveryStatus;private set{discoveryStatus=value;Changed();}}
+ public string DiscoveryStatus {get=>discoveryStatus;private set{if(discoveryStatus==value)return;discoveryStatus=value;Log("发现状态："+value);Changed();}}
  public string MapSuper {get=>preferences.MapSuper;set{preferences.MapSuper=value;Changed();}}
  public string MapControl {get=>preferences.MapControl;set{preferences.MapControl=value;Changed();}}
  public string MapOption {get=>preferences.MapOption;set{preferences.MapOption=value;Changed();}}
@@ -140,7 +172,8 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
   }
  }
  public LinkModel() : this(null,null,true,null,null) {}
- internal LinkModel(string? profile,string? core,bool systemEvents,Func<DesktopSnapshot>? readiness,TimeSpan? delay) {
+ internal LinkModel(string? profile,string? core,bool systemEvents,Func<DesktopSnapshot>? readiness,TimeSpan? delay,TimeSpan? failureNotice=null,TimeSpan? failureEscalate=null) {
+  this.failureNotice=failureNotice??TimeSpan.FromSeconds(30);this.failureEscalate=failureEscalate??TimeSpan.FromSeconds(60);
   folder=profile??Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"LinkDesk");
   tlsFolder=Path.Combine(folder,"tls");engine=core??Path.Combine(AppContext.BaseDirectory,"core","deskflow-core.exe");
   observeSystemEvents=systemEvents;desktopState=readiness??WindowsDesktopState.Read;recoveryDelay=delay??TimeSpan.FromSeconds(10);
@@ -189,14 +222,21 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
   discovery=new DiscoveryClient(pin,()=>Host,
    incoming=>Application.Current.Dispatcher.BeginInvoke(()=>{
     if(disposed||revision!=discoveryGeneration||peers is null)return;
-    try{
-     var oldName=SelectedDevice?.Name;var oldAddress=SelectedDevice?.Address;
-     bool selected=peers.Observe(incoming);RefreshDevices();
-     if(selected){bool returned=(DateTime.UtcNow-lastDiscoverySeen).TotalSeconds>12;lastDiscoverySeen=DateTime.UtcNow;ApplySelected(false);Save();
-      if(oldName!=incoming.Name||oldAddress!=incoming.Address||returned)RequestRecovery("已核对所选设备的身份");
-     }
-    }catch(Exception e){Log("设备列表："+e.Message);}
+    ObserveDiscovered(incoming);
    }),message=>Application.Current.Dispatcher.BeginInvoke(()=>{if(!disposed&&revision==discoveryGeneration){DiscoveryStatus=message;RefreshDevices();}}));
+ }
+ internal void ObserveDiscovered(PairedDevice incoming){
+  if(disposed||peers is null)return;
+  try{
+   var oldName=SelectedDevice?.Name;var oldAddress=SelectedDevice?.Address;
+   bool selected=peers.Observe(incoming);RefreshDevices();
+   if(selected){bool returned=lastDiscoverySeen!=DateTime.MinValue&&(DateTime.UtcNow-lastDiscoverySeen).TotalSeconds>12;lastDiscoverySeen=DateTime.UtcNow;ApplySelected(false);Save();
+    bool addressChanged=oldAddress!=incoming.Address;
+    if(addressChanged)Log($"所选设备地址更新：{oldAddress} → {incoming.Address}（{incoming.Name}）");
+    if(returned)Log("所选设备重新在线："+incoming.Address);
+    if(oldName!=incoming.Name||addressChanged||returned)RequestRecovery(addressChanged?"所选设备地址已更新":"已核对所选设备的身份",addressChanged);
+   }
+  }catch(Exception e){Log("设备列表："+e.Message);}
  }
  public void BeginAutomaticStart() {
   CancelAutomaticStart();
@@ -239,11 +279,13 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
   catch{return false;}
   finally{if(probe==pending){probe=null;probeNonce=null;}}
  }
- private async void RequestRecovery(string reason) {
+ private async void RequestRecovery(string reason,bool immediate=false) {
   if(disposed||!desired||!AutoConnect||recovery.Paused||recovery.Blocked)return;
+  urgentRecovery|=immediate;
   var request=recovery.Signal();
-  await Task.Delay(recoveryDelay);
-  if(disposed||!desired||!recovery.Current(request,AutoConnect)||restarting)return;
+  await Task.Delay(urgentRecovery?TimeSpan.Zero:recoveryDelay);
+  while(restarting&&!disposed&&desired&&recovery.Current(request,AutoConnect))await Task.Delay(50);
+  if(disposed||!desired||!recovery.Current(request,AutoConnect))return;
   bool online=NetworkInterface.GetAllNetworkInterfaces().Any(n=>n.OperationalStatus==OperationalStatus.Up&&n.NetworkInterfaceType!=NetworkInterfaceType.Loopback);
   if(!online||!ReadDesktop().Ready){Log(reason+"：网络或桌面尚未就绪，暂不变更核心。");return;}
   restarting=true;
@@ -260,7 +302,7 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
    if(!recovery.Current(request,AutoConnect))return;
    await ReloadCore(reason,()=>recovery.Current(request,AutoConnect));
   }catch(Exception e){recovery.Block();Status="自动恢复已暂停";Detail=e.Message;Log("恢复检查失败："+e.Message);}
-  finally{restarting=false;}
+  finally{if(recovery.Current(request,AutoConnect))urgentRecovery=false;restarting=false;}
  }
  private async Task ReloadCore(string reason,Func<bool>? stillRequested=null) {
   Log(reason+"：请求连接核心正常退出并重新启动。");
@@ -333,7 +375,7 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
   var p=new Process{StartInfo=new ProcessStartInfo(engine){UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true},EnableRaisingEvents=true};
   p.StartInfo.Environment["XDG_STATE_HOME"]=activeProfile;
   p.StartInfo.ArgumentList.Add(Server?"server":"client");p.StartInfo.ArgumentList.Add("--new-instance");p.StartInfo.ArgumentList.Add("--settings");p.StartInfo.ArgumentList.Add(Path.Combine(activeProfile,"LinkDesk.conf"));
-  void Line(object sender,DataReceivedEventArgs e){if(e.Data is null)return;Application.Current.Dispatcher.BeginInvoke(()=>{if(id!=generation)return;Log(e.Data);if(e.Data.Contains("FATAL")||e.Data.Contains("ERROR"))Detail="启动遇到问题，请查看连接日志。";});}
+  void Line(object sender,DataReceivedEventArgs e){if(e.Data is null)return;Application.Current.Dispatcher.BeginInvoke(()=>{if(id!=generation)return;if(ObserveConnectionOutput(e.Data))return;Log(e.Data);if(e.Data.Contains("FATAL")||e.Data.Contains("ERROR"))Detail="启动遇到问题，请查看连接日志。";});}
   p.OutputDataReceived+=Line;p.ErrorDataReceived+=Line;
   p.Exited+=(_,_)=>Application.Current.Dispatcher.BeginInvoke(()=>{
    if(disposed||id!=generation)return;
@@ -359,8 +401,8 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
   var parts=message.Split('=',2);var args=parts.Length>1?parts[1]:"";
   switch(parts[0]){
    case "pong":if(args==probeNonce)probe?.TrySetResult(true);break;
-   case "connectionState":Connected=args=="Connected";Status=Connected?"两台电脑已连接":Server?"等待所选设备":"正在重连所选设备";Detail=Connected?"键盘和鼠标可以在两台电脑间使用。":"网络恢复后会自动重连。";break;
-   case "connectedClients":Connected=args.Length>0;Status=Connected?"两台电脑已连接":"等待另一台电脑";Detail=Connected?"已连接："+args:"等待安全连接。";break;
+   case "connectionState":Connected=args=="Connected";if(Connected&&desired)ConnectionRecovered();Status=Connected?"两台电脑已连接":Server?"等待所选设备":"正在重连所选设备";Detail=Connected?"键盘和鼠标可以在两台电脑间使用。":"网络恢复后会自动重连。";break;
+   case "connectedClients":Connected=args.Length>0;if(Connected&&desired)ConnectionRecovered();Status=Connected?"两台电脑已连接":"等待另一台电脑";Detail=Connected?"已连接："+args:"等待安全连接。";break;
    case "connectionRefused":Detail=RefusalMessages.Describe(args);break;
    case "peerFingerprint":
     var observed=PeerStore.Pin(args);if(observed is null||!seen.Add(observed))break;
@@ -369,12 +411,12 @@ public sealed class LinkModel : INotifyPropertyChanged, IDisposable {
  }
  public void Toggle()=> (Running? (Action)Stop:Start)();
  public void Stop(){
-  CancelAutomaticStart();desired=false;recovery.StopSession();preferences.LastSessionRequested=false;Save();Connected=false;probe?.TrySetResult(false);
+  urgentRecovery=false;ResetFailure();CancelAutomaticStart();desired=false;recovery.StopSession();preferences.LastSessionRequested=false;Save();Connected=false;probe?.TrySetResult(false);
   var p=child;if(p is null||p.HasExited){Running=false;Status="已停止";return;}
   Log("用户请求停止核心：pid="+p.Id);SendStop();
   _=Task.Delay(5000).ContinueWith(_=>{try{if(!p.HasExited){LogOnDispatcher("用户停止超时，终止本应用持有的核心：pid="+p.Id);p.Kill();}}catch{}Application.Current.Dispatcher.BeginInvoke(()=>{if(child==p&&!desired){Running=false;Status="已停止";}});});Status="正在停止";
  }
  private void LogOnDispatcher(string line)=>Application.Current.Dispatcher.BeginInvoke(()=>Log(line));
  private void SendStop(){try{if(pipe?.IsConnected==true){var bytes=Encoding.UTF8.GetBytes("stop\n");pipe.Write(bytes);pipe.Flush();}}catch{}}
- public void Dispose(){if(disposed)return;CancelAutomaticStart();disposed=true;desired=false;recovery.StopSession();generation++;discoveryGeneration++;discovery?.Dispose();announcement?.Dispose();if(observeSystemEvents){NetworkChange.NetworkAddressChanged-=NetworkChanged;SystemEvents.PowerModeChanged-=PowerChanged;SystemEvents.SessionSwitch-=SessionChanged;}probe?.TrySetResult(false);SendStop();try{if(child is not null&&!child.HasExited&&!child.WaitForExit(5000))child.Kill();}catch{}session?.Cancel();pipe?.Dispose();child?.Dispose();}
+ public void Dispose(){if(disposed)return;CancelAutomaticStart();disposed=true;ResetFailure();desired=false;recovery.StopSession();generation++;discoveryGeneration++;discovery?.Dispose();announcement?.Dispose();if(observeSystemEvents){NetworkChange.NetworkAddressChanged-=NetworkChanged;SystemEvents.PowerModeChanged-=PowerChanged;SystemEvents.SessionSwitch-=SessionChanged;}probe?.TrySetResult(false);SendStop();try{if(child is not null&&!child.HasExited&&!child.WaitForExit(5000))child.Kill();}catch{}session?.Cancel();pipe?.Dispose();child?.Dispose();}
 }

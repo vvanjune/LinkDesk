@@ -138,16 +138,49 @@ final class LinkModel: ObservableObject {
     private let hasDeviceControl: () -> Bool
     private let desktopState: () -> MacDesktopSnapshot
     private let foreignCore: (() -> Bool)?
+    private let failureNotice: TimeInterval
+    private let failureEscalate: TimeInterval
+    private var failingSince: Date?
+    private var lastRefreshAt = Date.distantPast
+    private var failureCount = 0
+    private var failureEscalated = false
+    private var failureRevision = UUID()
+    private(set) var failureRefreshes = 0
+    private func resetFailure() { failingSince = nil; failureCount = 0; failureEscalated = false; lastRefreshAt = .distantPast; failureRevision = UUID() }
+    private func connectionRecovered() {
+        if let since = failingSince { let seconds = Int(Date().timeIntervalSince(since)); append("连接恢复，本次中断 \(seconds / 60) 分 \(seconds % 60) 秒") }
+        resetFailure()
+    }
+    private func observeConnectionOutput(_ line: String) -> Bool {
+        guard desired, !closing, !server else { return false }
+        let lower = line.lowercased()
+        if lower.contains("connected to secure socket") { handle("connectionState=Connected"); return false }
+        guard lower.contains("failed to connect to server") || lower.contains("server is dead") else { return false }
+        connected = false; failureCount += 1
+        if failingSince == nil { title = "正在重连所选设备"; detail = "当前地址：" + host; failingSince = Date(); append("连接失败开始：" + host); failureRevision = UUID(); watchFailure(failureRevision) }
+        return true
+    }
+    private func watchFailure(_ revision: UUID) {
+        guard revision == failureRevision, let since = failingSince, desired, !closing, !server else { return }
+        if running && !restarting && autoConnect && !suspended && !recoveryBlocked {
+            let now = Date(); let elapsed = now.timeIntervalSince(since)
+            if elapsed >= failureNotice && now.timeIntervalSince(lastRefreshAt) >= 15 { lastRefreshAt = now; failureRefreshes += 1; browser?.refresh() }
+            if elapsed >= failureEscalate && !failureEscalated { failureEscalated = true; append("连接失败持续：" + host + "；请检查对端共享与网络。") }
+            if elapsed >= failureNotice { title = failureEscalated ? "无法连接所选设备" : "正在重新查找所选设备"; detail = "当前地址：" + host + (failureEscalated ? "。请确认另一端已启动共享、两端在同一网络；若对方地址已变，请在“配对设备”重新查找。" : "") }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in self?.watchFailure(revision) }
+    }
     private let recoveryDelay: TimeInterval
     private let ipcPath: String?
     @Published var addresses: [String] = []
     @Published var allowDiscovery = true { didSet { defaults.set(allowDiscovery, forKey: "allowDiscovery"); updateDiscovery() } }
-    @Published var discoveryStatus = "正在查找局域网设备。"
+    @Published var discoveryStatus = "正在查找局域网设备。" { didSet { if oldValue != discoveryStatus { append("发现状态：" + discoveryStatus) } } }
     private let networkMonitor = NWPathMonitor()
     private var wakeObserver: NSObjectProtocol?
     private var recoveryWork: DispatchWorkItem?
     private var pathSignature: String?
     private var restarting = false
+    private var urgentRecovery = false
     private var closing = false
     private var recoveryBlocked = false
     private var responder: DiscoveryResponder?
@@ -160,7 +193,8 @@ final class LinkModel: ObservableObject {
     private var handledFingerprints = Set<String>()
     let settingsDir: URL
     let engine: URL
-    init(defaults: UserDefaults = .standard, profile: URL? = nil, engine: URL? = nil, observeSystemEvents: Bool = true, hasDeviceControl: @escaping () -> Bool = { AXIsProcessTrusted() }, desktopState: @escaping () -> MacDesktopSnapshot = MacDesktopState.read, foreignCore: (() -> Bool)? = nil, recoveryDelay: TimeInterval = 10, ipcPath: String? = nil) {
+    init(defaults: UserDefaults = .standard, profile: URL? = nil, engine: URL? = nil, observeSystemEvents: Bool = true, hasDeviceControl: @escaping () -> Bool = { AXIsProcessTrusted() }, desktopState: @escaping () -> MacDesktopSnapshot = MacDesktopState.read, foreignCore: (() -> Bool)? = nil, recoveryDelay: TimeInterval = 10, ipcPath: String? = nil, failureNotice: TimeInterval = 30, failureEscalate: TimeInterval = 60) {
+        self.failureNotice = failureNotice; self.failureEscalate = failureEscalate
         self.defaults = defaults; self.settingsDir = profile ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/LinkDesk")
         self.engine = engine ?? Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/deskflow-core")
         self.observeSystemEvents = observeSystemEvents; self.hasDeviceControl = hasDeviceControl; self.desktopState = desktopState; self.foreignCore = foreignCore; self.recoveryDelay = recoveryDelay; self.ipcPath = ipcPath
@@ -249,16 +283,19 @@ final class LinkModel: ObservableObject {
         }
     }
     private func finishProbe(_ result: Bool) { let completion = probeCompletion; probeNonce = nil; probeCompletion = nil; completion?(result) }
-    private func scheduleRecovery(_ reason: String) {
+    private func scheduleRecovery(_ reason: String, immediate: Bool = false) {
         guard autoConnect, desired, !closing, !suspended, !recoveryBlocked else { return }
+        urgentRecovery = urgentRecovery || immediate
         recoveryWork?.cancel(); let revision = UUID(); recoveryRevision = revision
         let work = DispatchWorkItem { [weak self] in self?.recover(reason, revision: revision) }
-        recoveryWork = work; DispatchQueue.main.asyncAfter(deadline: .now() + recoveryDelay, execute: work)
+        recoveryWork = work; DispatchQueue.main.asyncAfter(deadline: .now() + (urgentRecovery ? 0 : recoveryDelay), execute: work)
     }
     private func recover(_ reason: String, revision: UUID) {
-        guard autoConnect, desired, !closing, !suspended, !restarting, !recoveryBlocked, recoveryRevision == revision else { return }
+        guard autoConnect, desired, !closing, !suspended, !recoveryBlocked, recoveryRevision == revision else { return }
+        if restarting { DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in self?.recover(reason, revision: revision) }; return }
         refreshAddresses()
         guard !addresses.isEmpty, hasDeviceControl(), desktopState().ready else { append(reason + "：网络或桌面尚未就绪，保留核心。"); return }
+        if child == nil && !running { urgentRecovery = false; start(); return }
         guard let owned = child, owned.isRunning else { desired = false; recoveryBlocked = true; lastSessionRequested = false; defaults.set(false, forKey: "lastSessionRequested"); return }
         restarting = true
         probeCore { [weak self] responsive in
@@ -266,6 +303,7 @@ final class LinkModel: ObservableObject {
             guard self.autoConnect, self.desired, !self.closing, self.recoveryRevision == revision else { self.restarting = false; return }
             let changed = self.configurationSignature != self.activeConfiguration
             if !changed {
+                self.urgentRecovery = false
                 self.restarting = false
                 if responsive { self.append(reason + "：核心正常，保留进程 pid=\(owned.processIdentifier)。") }
                 else { self.recoveryBlocked = true; self.title = "共享核心暂未响应"; self.detail = "保留进程，不自动反复重启。请查看日志后手动停止并重试。" }
@@ -284,7 +322,7 @@ final class LinkModel: ObservableObject {
                     if owned.isRunning { self.recoveryBlocked = true; self.title = "等待旧共享进程退出"; self.detail = "自动恢复暂停，避免强制终止后反复启动。"; return }
                     self.child = nil
                     guard self.autoConnect, self.desired, !self.closing, self.recoveryRevision == revision else { return }
-                    self.start()
+                    self.urgentRecovery = false; self.start()
                 }
             }
         }
@@ -340,10 +378,13 @@ final class LinkModel: ObservableObject {
             let old = selectedDevice
             let selected = try peers.observe(incoming); refreshDevices()
             if selected {
-                let returned = Date().timeIntervalSince(lastSelectedSeen) > 12; lastSelectedSeen = Date()
+                let returned = lastSelectedSeen != .distantPast && Date().timeIntervalSince(lastSelectedSeen) > 12; lastSelectedSeen = Date()
                 applySelected(restoreInput: false); save()
                 if old?.address != incoming.address || old?.name != incoming.name || returned {
-                    scheduleRecovery("已核对所选设备的身份")
+                    let addressChanged = old?.address != incoming.address
+                    if addressChanged { append("所选设备地址更新：\(old?.address ?? "") → \(incoming.address)（\(incoming.name)）") }
+                    if returned { append("所选设备重新在线：" + incoming.address) }
+                    scheduleRecovery(addressChanged ? "所选设备地址已更新" : "已核对所选设备的身份", immediate: addressChanged)
                 }
             }
         } catch { append("设备列表：" + error.localizedDescription) }
@@ -518,6 +559,7 @@ final class LinkModel: ObservableObject {
         do { try check.run(); check.waitUntilExit(); return check.terminationStatus == 0 } catch { return false }
     }
     func stop() {
+        urgentRecovery = false; resetFailure()
         desired = false; lastSessionRequested = false; defaults.set(false, forKey: "lastSessionRequested"); connected = false
         cancelQueuedRecovery(); finishProbe(false)
         guard let child = child, child.isRunning else { running = false; return }
@@ -529,6 +571,7 @@ final class LinkModel: ObservableObject {
         title = "正在停止"; detail = "正在结束共享连接。"
     }
     func shutdown() {
+        resetFailure()
         closing = true; generation = UUID(); cancelQueuedRecovery(); finishProbe(false); networkMonitor.cancel(); stopDiscovery()
         for observer in workspaceObservers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }; workspaceObservers.removeAll()
         desired = false; channel?.send("stop")
@@ -542,7 +585,7 @@ final class LinkModel: ObservableObject {
     func readLog(_ text: String) {
         partial += text
         while let index = partial.firstIndex(of: "\n") {
-            let line = String(partial[..<index]); partial.removeSubrange(...index); append(line)
+            let line = String(partial[..<index]); partial.removeSubrange(...index); if observeConnectionOutput(line) { continue }; append(line)
             if line.contains("FATAL") || line.contains("ERROR") { detail = "启动遇到问题，请在“连接日志”中查看详情。" }
             if line.contains("accessibility") || line.contains("Accessibility") || line.contains("assistive devices") {
                 desired = false
@@ -558,11 +601,11 @@ final class LinkModel: ObservableObject {
         case "pong": if args == probeNonce { finishProbe(true) }
         case "hello": coreReady = true; updateDiscovery(); title = server ? "等待所选设备" : "正在连接所选设备"; detail = "加密连接开启，网络恢复后会自动重连。"
         case "connectionState":
-            connected = args == "Connected"
+            connected = args == "Connected"; if connected && desired { connectionRecovered() }
             title = connected ? "两台电脑已连接" : (running ? (server ? "等待所选设备" : "正在重连") : "已停止")
             detail = connected ? "可以把指针移到另一台电脑，键盘会跟随。" : "保持两台电脑联网，连接会自动恢复。"
         case "connectedClients":
-            connected = !args.isEmpty; title = connected ? "两台电脑已连接" : "等待所选设备"
+            connected = !args.isEmpty; if connected && desired { connectionRecovered() }; title = connected ? "两台电脑已连接" : "等待所选设备"
             detail = connected ? "已连接：\(args) · 加密传输" : "另一台电脑恢复联网后会自动连接。"
         case "peerFingerprint":
             guard let pin = PeerStore.pin(args), !handledFingerprints.contains(pin) else { return }

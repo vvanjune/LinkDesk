@@ -67,13 +67,13 @@ jobs:
           if ($forbidden) { throw 'Private state or debugging files in package' }
           $version=(Get-Content source/VERSION -Raw).Trim()
           if ((Get-Item package/LinkDesk.exe).VersionInfo.ProductVersion.Split('+')[0] -ne $version) { throw 'Windows executable version differs from shared version' }
-          if ($version -ne '0.4.5') { throw 'Unexpected shared version' }
-          Compress-Archive package/* LinkDesk-Windows-0.4.5.zip
-          (Get-FileHash LinkDesk-Windows-0.4.5.zip -Algorithm SHA256).Hash.ToLower()+'  LinkDesk-Windows-0.4.5.zip' | Set-Content SHA256SUMS.txt
+          if ($version -ne '0.4.6') { throw 'Unexpected shared version' }
+          Compress-Archive package/* LinkDesk-Windows-0.4.6.zip
+          (Get-FileHash LinkDesk-Windows-0.4.6.zip -Algorithm SHA256).Hash.ToLower()+'  LinkDesk-Windows-0.4.6.zip' | Set-Content SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: LinkDesk-Windows-0.4.5
+          name: LinkDesk-Windows-0.4.6
           path: |
-            LinkDesk-Windows-0.4.5.zip
+            LinkDesk-Windows-0.4.6.zip
             SHA256SUMS.txt
           retention-days: 14

@@ -3,7 +3,7 @@ import AppKit
 import CryptoKit
 @main struct RecoveryModelTests {
  static func runLoop(_ time: Double) { RunLoop.main.run(until: Date().addingTimeInterval(time)) }
- static func until(_ check: () -> Bool, seconds: Double = 8) { let end = Date().addingTimeInterval(seconds); while !check() { precondition(Date() < end, "model wait timed out"); runLoop(0.05) } }
+ static func until(_ check: () -> Bool, seconds: Double = 8, line: UInt = #line) { let end = Date().addingTimeInterval(seconds); while !check() { precondition(Date() < end, "model wait timed out at line \(line)"); runLoop(0.05) } }
  static func main() throws {
   // Keep the private fixture socket below sockaddr_un's macOS path limit.
   let root = URL(fileURLWithPath: "/private/tmp").appendingPathComponent("LinkDeskMacModel-"+UUID().uuidString)
@@ -52,6 +52,29 @@ import CryptoKit
   until({!editing.running}); runLoop(0.3)
   precondition(launches().count == beforeEdit + 1, "stop during settings reload restarted core")
   editing.shutdown()
+  let watch = LinkModel(defaults: defaults, profile: root, engine: core, observeSystemEvents: false, hasDeviceControl: {true}, desktopState: {MacDesktopSnapshot(ready: true, signature: "fixture-display")}, foreignCore: {false}, recoveryDelay: 30, ipcPath: root.appendingPathComponent("socket").path, failureNotice: 0.3, failureEscalate: 0.6)
+  watch.start(); until({watch.connected})
+  let beforeFailure = launches().count
+  try Data().write(to: root.appendingPathComponent("launches.linkfail"))
+  until({watch.title == "无法连接所选设备"})
+  runLoop(0.3)
+  precondition(launches().count == beforeFailure && watch.running && !watch.connected && watch.failureRefreshes == 1)
+  precondition(watch.logs.filter {$0.contains("连接失败开始")}.count == 1)
+  precondition(watch.logs.filter {$0.contains("连接失败持续")}.count == 1)
+  watch.observeDevice(PairedDevice(fingerprint: pin, name: "RenamedPeer", address: "127.0.0.2", platform: "Windows", role: "server", lastSeen: Date().timeIntervalSince1970))
+  runLoop(0.2); precondition(launches().count == beforeFailure, "name change bypassed debounce")
+  watch.observeDevice(PairedDevice(fingerprint: pin, name: "RenamedPeer", address: "127.0.0.3", platform: "Windows", role: "server", lastSeen: Date().timeIntervalSince1970))
+  until({launches().count == beforeFailure + 1}, seconds: 1)
+  precondition(watch.logs.contains {$0.contains("所选设备地址更新：127.0.0.2 → 127.0.0.3")})
+  runLoop(1.5)
+  try FileManager.default.removeItem(at: root.appendingPathComponent("launches.linkfail"))
+  until({watch.connected && watch.title == "两台电脑已连接"})
+  precondition(watch.logs.filter {$0.contains("连接恢复")}.count == 1)
+  watch.stop(); until({!watch.running}); let refreshCount = watch.failureRefreshes
+  for _ in 0..<100 { watch.networkSignal(); watch.resumeSignal() }
+  watch.readLog("failed to connect to server\n"); runLoop(0.7)
+  precondition(launches().count == beforeFailure + 1 && watch.failureRefreshes == refreshCount)
+  watch.shutdown()
   let finalLaunchCount = launches().count
   defaults.set(true, forKey: "autoStartOnLaunch"); defaults.set(true, forKey: "lastSessionRequested")
   let queued = LinkModel(defaults: defaults, profile: root, engine: core, observeSystemEvents: false, hasDeviceControl: {true}, desktopState: {MacDesktopSnapshot(ready: true, signature: "fixture-display")}, foreignCore: {false}, recoveryDelay: 0.03)

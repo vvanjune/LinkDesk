@@ -1,4 +1,4 @@
-# LinkDesk 0.4.5: both platforms
+# LinkDesk 0.4.6: both platforms
 
 GPL-2.0-only. Native SwiftUI/AppKit on macOS 13+ Apple Silicon; WPF on Windows x64 with self-contained .NET 10. Both packages use audited system-specific Deskflow 1.27.0 display-safety patches and required runtimes. Both apps build from source/VERSION and display their actual assembled version. Users do not install Deskflow or .NET separately.
 
@@ -17,6 +17,8 @@ devices.json stores paired identities, aliases, last known addresses, selected f
 Each connection uses connections/<selected SHA256>/ as its core profile. Its TLS trust databases contain only the selected fingerprint, in both roles. An already-paired alternative device cannot substitute for the selection. Forgetting removes its record and connection profile; a migration marker prevents old root trust databases from resurrecting forgotten pairings. No private keys, personal settings or pairing records are shipped.
 
 ## Discovery and recovery
+
+0.4.6 adds receiver-side connection failure monitoring: after 30 seconds it requests discovery (at most once per 15 seconds); after 60 seconds it shows actionable network and peer-sharing guidance. Failures alone never reload or kill the core. Recovery logs the outage duration. Selected-peer address changes bypass the ordinary recovery delay while retaining session, pause, identity and configuration-change checks. Discovery status, endpoint changes and peer returns are logged without repeating identical status messages.
 
 Protocol v2 signs the fresh random query nonce, name, source IPv4 address, port, platform and role using the advertised certificate key (RSA SHA-256 PKCS#1 or ECDSA SHA-256 DER). Both implementations validate signature, nonce, source address, field formats and protocol version before displaying a candidate. Only the explicitly selected paired identity can update the current connection address. Broadcast and remembered-address probes are bounded and rate-limited. The Mac responder also answers legacy v1 server queries for migration; both endpoints should upgrade to 0.4.0 for symmetric discovery.
 
